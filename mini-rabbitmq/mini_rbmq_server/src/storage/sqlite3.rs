@@ -28,9 +28,6 @@ impl CSqlite3 {
                 exchange_name varchar(64) primary key,
                 exchange_type varchar(64)
             );
-            create table if not exists t_queue_info (
-                queue_name varchar(64) primary key
-            );
             create table if not exists t_bind_info (
                 exchange_name varchar(64),
                 queue_name varchar(64),
@@ -62,7 +59,9 @@ impl CSqlite3 {
     pub fn createQueue(&self, queueName: &str) -> sqlite3::Result<()> {
         let sql = format!(
             "
-            insert into t_queue_info values('{}');
+            create table if not exists {} (
+                data text
+            );
             "
         , queueName);
         if let Ok(ref conn) = self.connect {
