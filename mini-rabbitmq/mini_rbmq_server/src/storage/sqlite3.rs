@@ -71,30 +71,16 @@ impl CSqlite3 {
     }
 
     pub fn createBind(&self, exchangeName: &str, queueName: &str, routerKey: &str) -> sqlite3::Result<()> {
-        let sql = format!(
-            "
-            insert into t_bind_info values({}, {}, {});
-            "
-        , exchangeName, queueName, routerKey);
-        if let Ok(ref conn) = self.connect {
-            conn.execute(sql)?
-        }
-        Ok(())
-    }
-
-    fn getBindInfoByExchangeRouterKey(&self, exchangeName: &str, routerKey: &str) -> sqlite3::Result<()> {
-        let sql = format!(
-            "
-            select exchange_name, queue_name, router_key, count(0) from t_bind_info
-            where exchange_name = {} and router_key = {};
-            "
-        , exchangeName, routerKey);
-        if let Ok(ref conn) = self.connect {
-            conn.iterate(sql, |pairs| {
-                for &(col, value) in pairs.iter() {
-                }
-                true
-            })?
+        let count = self.getBindCount(exchangeName, queueName, routerKey);
+        if count == 0 {
+            let sql = format!(
+                "
+                insert into t_bind_info values({}, {}, {});
+                "
+            , exchangeName, queueName, routerKey);
+            if let Ok(ref conn) = self.connect {
+                conn.execute(sql)?
+            }
         }
         Ok(())
     }
@@ -114,7 +100,7 @@ impl CSqlite3 {
 impl CSqlite3 {
     fn getExchangeCount(&self, exchangeName: &str) -> u32 {
         let mut count = 0 as u32;
-        self.getSingle(
+        self.get(
             "
             select count(0) from t_exchange_info where exchange_name = ?;
             "
@@ -125,10 +111,48 @@ impl CSqlite3 {
         });
         count
     }
+
+    fn getBindCount(&self, exchangeName: &str, queueName: &str, routerKey: &str) -> u32 {
+        let mut count = 0 as u32;
+        self.get(
+            "
+            select count(0) from t_bind_info
+            where exchange_name = ? and queue_name = ?
+            and router_key = ?;
+            "
+        , &[sqlite3::Value::String(String::from(exchangeName))
+        , sqlite3::Value::String(String::from(queueName))
+        , sqlite3::Value::String(String::from(routerKey))], &mut |v: &[sqlite3::Value]| {
+            if let Some(value) = v[0].as_integer() {
+                count = value as u32;
+            };
+        });
+        count
+    }
+
+    fn getBindInfoByExchangeRouterKey(&self, exchangeName: &str, routerKey: &str) -> sqlite3::Result<()> {
+        self.get(
+            "
+            select bi.exchange_name, bi.exchange_type
+            , ei, bi.queue_name, bi.router_key, count(0)
+            from t_bind_info as bi
+            inner join t_exchange_info as ei
+            bi.exchange_name = ei.exchange_name
+            where bi.exchange_name = {} and bi.router_key = {};
+            "
+        , &[sqlite3::Value::String(String::from(exchangeName))
+        , sqlite3::Value::String(String::from(queueName))
+        , sqlite3::Value::String(String::from(routerKey))], &mut |v: &[sqlite3::Value]| {
+            if let Some(value) = v[0].as_integer() {
+                count = value as u32;
+            };
+        });
+        Ok(())
+    }
 }
 
 impl CSqlite3 {
-    fn getSingle<Func>(&self, sql: &str, params: &[sqlite3::Value], callback: &mut Func)
+    fn get<Func>(&self, sql: &str, params: &[sqlite3::Value], callback: &mut Func)
         where Func: FnMut(&[sqlite3::Value]) {
         let conn = match self.connect {
             Ok(ref conn) => conn,
@@ -142,13 +166,18 @@ impl CSqlite3 {
         if let Err(_) = cursor.bind(params) {
             return;
         }
-        let next = match cursor.next() {
-            Ok(next) => next,
-            Err(_) => return,
-        };
-        if let Some(row) = next {
-            callback(row);
+        while let Ok(next) = cursor.next() {
+            if let Some(row) = next {
+                callback(row);
+            }
         }
+        // let next = match cursor.next() {
+        //     Ok(next) => next,
+        //     Err(_) => return,
+        // };
+        // if let Some(row) = next {
+        //     callback(row);
+        // }
     }
 }
 
