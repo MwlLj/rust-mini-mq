@@ -1,10 +1,19 @@
 extern crate sqlite3;
+extern crate rand;
+
+use super::super::consts::exchange;
+use rand::Rng;
 
 pub struct CSqlite3 {
     connect: sqlite3::Result<sqlite3::Connection>
 }
 
-struct CGetBindInfoByExchangeRouterKeyOutput {
+#[derive(Default, Debug)]
+struct CGetBindInfo {
+    exchangeName: String,
+    exchangeType: String,
+    queueName: String,
+    routerKey: String
 }
 
 impl CSqlite3 {
@@ -75,7 +84,7 @@ impl CSqlite3 {
         if count == 0 {
             let sql = format!(
                 "
-                insert into t_bind_info values({}, {}, {});
+                insert into t_bind_info values('{}', '{}', '{}');
                 "
             , exchangeName, queueName, routerKey);
             if let Ok(ref conn) = self.connect {
@@ -85,15 +94,52 @@ impl CSqlite3 {
         Ok(())
     }
 
-    pub fn addData(&self, exchangeName: &str, routerKey: &str) -> sqlite3::Result<()> {
-        let sql = format!(
-            "
-            "
-        );
-        if let Ok(ref conn) = self.connect {
-            conn.execute(sql)?
+    pub fn addData(&self, exchangeName: &str, routerKey: &str, data: &str) -> sqlite3::Result<()> {
+        let mut infos = self.getBindInfoByExchangeRouterKey(exchangeName, routerKey);
+        let length = infos.len();
+        if length == 0 {
+            return Ok(());
         }
-        Ok(())
+        let first = &infos[0];
+        if first.exchangeType == exchange::exchangeTypeDirect {
+            // random
+            let index = rand::thread_rng().gen_range(0, length);
+            for i in 0..length {
+                if i != index {
+                    infos.remove(i);
+                }
+            }
+        } else if first.exchangeType == exchange::exchangeTypeFanout {
+            // all
+        }
+        self.startTransaction();
+        let mut result = true;
+        for info in infos {
+            let sql = format!(
+                "
+                insert into {} values('{}');
+                "
+            , &info.queueName, data);
+            if let Ok(ref conn) = self.connect {
+                if let Err(_) = conn.execute(sql) {
+                    result = false;
+                    break;
+                }
+            } else {
+                result = false;
+                break;
+            }
+        }
+        if result {
+            self.commit();
+            Ok(())
+        } else {
+            self.rollback();
+            Err(sqlite3::Error{
+                code: Some(1),
+                message: Some("inner error".to_string())
+            })
+        }
     }
 }
 
@@ -130,24 +176,54 @@ impl CSqlite3 {
         count
     }
 
-    fn getBindInfoByExchangeRouterKey(&self, exchangeName: &str, routerKey: &str) -> sqlite3::Result<()> {
+    fn getBindInfoByExchangeRouterKey(&self, exchangeName: &str, routerKey: &str) -> Vec<CGetBindInfo> {
+        let mut infos: Vec<CGetBindInfo> = Vec::new();
         self.get(
             "
-            select bi.exchange_name, bi.exchange_type
-            , ei, bi.queue_name, bi.router_key, count(0)
+            select bi.exchange_name, ei.exchange_type
+            , bi.queue_name, bi.router_key
             from t_bind_info as bi
             inner join t_exchange_info as ei
-            bi.exchange_name = ei.exchange_name
-            where bi.exchange_name = {} and bi.router_key = {};
+            on bi.exchange_name = ei.exchange_name
+            where bi.exchange_name = ? and bi.router_key = ?;
             "
         , &[sqlite3::Value::String(String::from(exchangeName))
-        , sqlite3::Value::String(String::from(queueName))
         , sqlite3::Value::String(String::from(routerKey))], &mut |v: &[sqlite3::Value]| {
-            if let Some(value) = v[0].as_integer() {
-                count = value as u32;
+            let mut info = CGetBindInfo::default();
+            if let Some(value) = v[0].as_string() {
+                info.exchangeName = value.to_string();
             };
+            if let Some(value) = v[1].as_string() {
+                info.exchangeType = value.to_string();
+            };
+            if let Some(value) = v[2].as_string() {
+                info.queueName = value.to_string();
+            };
+            if let Some(value) = v[3].as_string() {
+                info.routerKey = value.to_string();
+            };
+            infos.push(info);
         });
+        infos
+    }
+
+    fn transaction(&self, sql: &str) -> sqlite3::Result<()> {
+        if let Ok(ref conn) = self.connect {
+            conn.execute(sql)?
+        }
         Ok(())
+    }
+
+    fn startTransaction(&self) -> sqlite3::Result<()> {
+        return self.transaction("begin transaction;");
+    }
+
+    fn commit(&self) -> sqlite3::Result<()> {
+        return self.transaction("commit;");
+    }
+
+    fn rollback(&self) -> sqlite3::Result<()> {
+        return self.transaction("rollback;");
     }
 }
 
@@ -160,15 +236,21 @@ impl CSqlite3 {
         };
         let pre = match conn.prepare(sql) {
             Ok(pre) => pre,
-            Err(_) => return,
+            Err(err) => {
+                println!("prepare error, err: {}", err);
+                return;
+            }
         };
         let mut cursor = pre.cursor();
-        if let Err(_) = cursor.bind(params) {
+        if let Err(err) = cursor.bind(params) {
+            println!("param bind error, err: {}", err);
             return;
         }
         while let Ok(next) = cursor.next() {
             if let Some(row) = next {
                 callback(row);
+            } else {
+                break;
             }
         }
         // let next = match cursor.next() {
