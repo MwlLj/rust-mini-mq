@@ -40,10 +40,9 @@ fn main() {
         return;
     }
     println!("add data success");
-    if let Err(_) = s.getOneData("test_queue1", |data: &str| -> bool {
+    while let Some(data) = s.getOneData("test_queue2", |data: &str| -> bool {
         return true;
     }) {
-        return;
+        println!("{:?}", &data);
     }
-    println!("get one data success");
 }

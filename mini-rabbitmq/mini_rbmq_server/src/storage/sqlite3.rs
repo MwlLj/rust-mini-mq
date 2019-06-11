@@ -146,13 +146,14 @@ impl CSqlite3 {
         }
     }
 
-    pub fn getOneData<Func>(&self, queueName: &str, callback: Func) -> sqlite3::Result<()>
+    pub fn getOneData<Func>(&self, queueName: &str, callback: Func) -> Option<String>
         where Func: Fn(&str) -> bool {
         let mut uuid = String::new();
         let mut data = String::new();
+        let mut count: i64 = 0;
         let sql = format!(
             "
-            select uuid, data from {} limit 1;
+            select uuid, data, count(0) from {} limit 1;
             "
             , queueName);
         self.get(&sql, &[]
@@ -163,19 +164,28 @@ impl CSqlite3 {
             if let Some(value) = v[1].as_string() {
                 data = value.to_string();
             }
+            if let Some(value) = v[2].as_integer() {
+                count = value;
+            }
         });
         let result = callback(&data);
         if result {
             let sql = format!(
                 "
-                delete from {} where uuid = {};
+                delete from {} where uuid = '{}';
                 "
             , queueName, uuid);
             if let Ok(ref conn) = self.connect {
-                conn.execute(sql)?
+                if let Err(_) = conn.execute(sql) {
+                    return None;
+                }
             }
         }
-        Ok(())
+        if count == 0 {
+            None
+        } else {
+            Some(data)
+        }
     }
 }
 
