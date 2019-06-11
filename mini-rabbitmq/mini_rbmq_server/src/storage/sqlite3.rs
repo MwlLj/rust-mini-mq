@@ -1,8 +1,10 @@
 extern crate sqlite3;
 extern crate rand;
+extern crate uuid;
 
 use super::super::consts::exchange;
 use rand::Rng;
+use uuid::Uuid;
 
 pub struct CSqlite3 {
     connect: sqlite3::Result<sqlite3::Connection>
@@ -69,6 +71,7 @@ impl CSqlite3 {
         let sql = format!(
             "
             create table if not exists {} (
+                uuid varchar(64),
                 data text
             );
             "
@@ -115,11 +118,12 @@ impl CSqlite3 {
         self.startTransaction();
         let mut result = true;
         for info in infos {
+            let uid = uuid::Uuid::new_v4();
             let sql = format!(
                 "
-                insert into {} values('{}');
+                insert into {} values('{}', '{}');
                 "
-            , &info.queueName, data);
+            , &info.queueName, uid, data);
             if let Ok(ref conn) = self.connect {
                 if let Err(_) = conn.execute(sql) {
                     result = false;
@@ -140,6 +144,38 @@ impl CSqlite3 {
                 message: Some("inner error".to_string())
             })
         }
+    }
+
+    pub fn getOneData<Func>(&self, queueName: &str, callback: Func) -> sqlite3::Result<()>
+        where Func: Fn(&str) -> bool {
+        let mut uuid = String::new();
+        let mut data = String::new();
+        let sql = format!(
+            "
+            select uuid, data from {} limit 1;
+            "
+            , queueName);
+        self.get(&sql, &[]
+        , &mut |v: &[sqlite3::Value]| {
+            if let Some(value) = v[0].as_string() {
+                uuid = value.to_string();
+            }
+            if let Some(value) = v[1].as_string() {
+                data = value.to_string();
+            }
+        });
+        let result = callback(&data);
+        if result {
+            let sql = format!(
+                "
+                delete from {} where uuid = {};
+                "
+            , queueName, uuid);
+            if let Ok(ref conn) = self.connect {
+                conn.execute(sql)?
+            }
+        }
+        Ok(())
     }
 }
 

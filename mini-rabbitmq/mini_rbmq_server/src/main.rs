@@ -40,4 +40,10 @@ fn main() {
         return;
     }
     println!("add data success");
+    if let Err(_) = s.getOneData("test_queue1", |data: &str| -> bool {
+        return true;
+    }) {
+        return;
+    }
+    println!("get one data success");
 }
