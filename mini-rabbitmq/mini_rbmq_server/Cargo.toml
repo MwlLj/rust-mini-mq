@@ -8,3 +8,10 @@ edition = "2018"
 sqlite3 = "*"
 rand = "*"
 uuid = { version = "0.7", default-features = false, features = ["serde", "v4"] }
+
+serde = "*"
+serde_derive = "*"
+serde_json = "*"
+rustc-serialize = "*"
+
+rust_parse = { git = "https://github.com/MwlLj/rust_parse" }
