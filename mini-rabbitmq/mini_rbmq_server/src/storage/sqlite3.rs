@@ -18,6 +18,11 @@ struct CGetBindInfo {
     routerKey: String
 }
 
+struct CQueueInfo {
+    queueType: String,
+    count: u32
+}
+
 impl CSqlite3 {
     pub fn connect(vhost: &str) -> Result<CSqlite3, &str> {
         let mut path = String::from(vhost);
@@ -44,6 +49,10 @@ impl CSqlite3 {
                 queue_name varchar(64),
                 router_key varchar(64)
             );
+            create table if not exists t_queue_info (
+                queue_name varchar(64),
+                queue_type varchar(64)
+            );
             "
         );
         if let Ok(ref conn) = self.connect {
@@ -67,17 +76,36 @@ impl CSqlite3 {
         Ok(())
     }
 
-    pub fn createQueue(&self, queueName: &str) -> sqlite3::Result<()> {
-        let sql = format!(
-            "
-            create table if not exists {} (
-                uuid varchar(64),
-                data text
-            );
-            "
-        , queueName);
-        if let Ok(ref conn) = self.connect {
-            conn.execute(sql)?
+    pub fn createQueue(&self, queueName: &str, queueType: &str) -> sqlite3::Result<()> {
+        let info = self.getQueueByName(queueName);
+        if info.count == 0 {
+            self.startTransaction();
+            let sql = format!(
+                "
+                insert into t_queue_info values('{}', '{}');
+                "
+            , queueName, queueType);
+            if let Ok(ref conn) = self.connect {
+                if let Err(err) = conn.execute(sql) {
+                    self.rollback();
+                    return Err(err);
+                }
+            }
+            let sql = format!(
+                "
+                create table if not exists {} (
+                    uuid varchar(64),
+                    data text
+                );
+                "
+            , queueName);
+            if let Ok(ref conn) = self.connect {
+                if let Err(err) = conn.execute(sql) {
+                    self.rollback();
+                    return Err(err);
+                }
+            }
+            self.commit();
         }
         Ok(())
     }
@@ -147,15 +175,16 @@ impl CSqlite3 {
     }
 
     pub fn getOneData<Func>(&self, queueName: &str, callback: Func) -> Option<String>
-        where Func: Fn(&str) -> bool {
+        where Func: Fn(&str, &str) -> bool {
         let mut uuid = String::new();
         let mut data = String::new();
+        let mut queueType = String::new();
         let mut count: i64 = 0;
         let sql = format!(
             "
-            select uuid, data, count(0) from {} limit 1;
+            select q.uuid, q.data, tqi.queue_type, count(0) from {} as q, t_queue_info as tqi where tqi.queue_name = '{}' limit 1;
             "
-            , queueName);
+            , queueName, queueName);
         self.get(&sql, &[]
         , &mut |v: &[sqlite3::Value]| {
             if let Some(value) = v[0].as_string() {
@@ -164,11 +193,14 @@ impl CSqlite3 {
             if let Some(value) = v[1].as_string() {
                 data = value.to_string();
             }
-            if let Some(value) = v[2].as_integer() {
+            if let Some(value) = v[2].as_string() {
+                queueType = value.to_string();
+            }
+            if let Some(value) = v[3].as_integer() {
                 count = value;
             }
         });
-        let result = callback(&data);
+        let result = callback(&queueType, &data);
         if result {
             let sql = format!(
                 "
@@ -202,6 +234,27 @@ impl CSqlite3 {
             };
         });
         count
+    }
+
+    fn getQueueByName(&self, queueName: &str) -> CQueueInfo {
+        let mut queueType = String::new();
+        let mut count = 0 as u32;
+        self.get(
+            "
+            select queue_type, count(0) from t_queue_info where queue_name = ?;
+            "
+        , &[sqlite3::Value::String(String::from(queueName))], &mut |v: &[sqlite3::Value]| {
+            if let Some(value) = v[0].as_string() {
+                queueType = value.to_string();
+            };
+            if let Some(value) = v[1].as_integer() {
+                count = value as u32;
+            };
+        });
+        CQueueInfo{
+            queueType: queueType,
+            count: count,
+        }
     }
 
     fn getBindCount(&self, exchangeName: &str, queueName: &str, routerKey: &str) -> u32 {

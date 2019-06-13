@@ -1,5 +1,6 @@
 // extern crate serde_json;
 extern crate rustc_serialize;
+extern crate rust_pool;
 
 use std::error::Error;
 use std::collections::HashMap;
@@ -18,13 +19,13 @@ use std::io::prelude::*;
 
 use rustc_serialize::json;
 
-use super::super::pool::thread::CThreadPool;
-use super::super::storage::IStorage;
-use super::super::storage::file::CFile;
-use super::super::statics::content::CContent;
+use rust_pool::thread::simple::CThreadPool;
+use super::super::storage::sqlite3;
 
 const requestModeConnect: &str = "connect";
-const requestModeSending: &str = "sending";
+const requestModeCreateExchange: &str = "create-exchange";
+const requestModeCreateQueue: &str = "create-queue";
+const requestModeCreateBind: &str = "create-bind";
 const requestIdentifyPublish: &str = "publish";
 const requestIdentifySubscribe: &str = "subscribe";
 const storageModeNone: &str = "none";
@@ -37,13 +38,19 @@ const logTypeError: &str = "error";
 pub struct CRequest {
     mode: String,
     identify: String,
-    serverName: String,
-    serverVersion: String,
-    serverNo: String,
-    topic: String,
-    data: String,
-    storageMode: String,
-    logType: String
+    vhost: String,
+    exchangeName: String,
+    exchangeType: String,
+    queueName: String,
+    queueType: String,
+    routerKey: String,
+    data: String
+}
+
+#[derive(RustcDecodable, RustcEncodable)]
+pub struct CResponse {
+    error: u32,
+    errorString: String
 }
 
 pub struct CSubscribeInfo {
@@ -57,133 +64,93 @@ pub struct CSubscribeInfo {
 
 pub struct CConnect {
     subscribes: HashMap<String, Vec<CSubscribeInfo>>,
-    queuePool: CThreadPool,
-    storageFile: CFile,
-    content: CContent
+    queuePool: CThreadPool
 }
 
 impl CConnect {
-    fn joinKey(serverName: String, serverVersion: String, serverNo: String) -> String {
-    	if serverName != "" && serverVersion == "" && serverNo == "" {
-    		// to do
-    	}
-        let key = vec![serverName, serverVersion, serverNo].join("-");
-        key
-    }
-
     pub fn start(self, addr: &str) {
         let listener = TcpListener::bind(addr).unwrap();
         let subscribes = Arc::new(Mutex::new(self.subscribes));
         let threadPool = Arc::new(Mutex::new(self.queuePool));
-        let storageFile = Arc::new(Mutex::new(self.storageFile));
-        let contentStatic = Arc::new(Mutex::new(self.content));
         for stream in listener.incoming() {
             let subscribes = subscribes.clone();
             let threadPool = threadPool.clone();
-            let storageFile = storageFile.clone();
-            let contentStatic = contentStatic.clone();
             thread::spawn(move || {
                 if let Ok(stream) = stream {
                     let mut reader = BufReader::new(&stream);
-                    // loop {
-                    //     let mut buf = vec![];
-                    //     if let Err(_) = reader.read_until(b'\n', &mut buf) {
-                    //         break;
-                    //     }
-                        // let body = String::from_utf8(buf);
-                        // if let Ok(request) = json::decode(body.unwrap().as_str()) {
+                    let mut writer = BufWriter::new(&stream);
+                    // connect
+                    let mut connect = String::new();
+                    match reader.read_line(&mut connect) {
+                        Ok(size) => {},
+                        Err(err) => {
+                            println!("{:?}", err);
+                            return
+                        }
+                    }
+                    let mut vhost = String::new();
+                    match json::decode(&connect) {
+                        Ok(request) => {
+                            let request: CRequest = request;
+                            if request.mode != requestModeConnect {
+                                return;
+                            }
+                            vhost = request.vhost;
+                        },
+                        Err(err) => {
+                            println!("{:?}", err);
+                            return
+                        }
+                    }
+                    let dbConnect = match sqlite3::CSqlite3::connect(&vhost) {
+                        Ok(conn) => conn,
+                        Err(err) => {
+                            println!("{:?}", err);
+                            return
+                        }
+                    };
                     for line in reader.lines() {
-                        if let Ok(line) = line {
-                            if let Ok(request) = json::decode(&line) {
-                                let request: CRequest = request;
-                                if request.mode == requestModeConnect && request.identify == requestIdentifyPublish {
-                                    let key = CConnect::joinKey(request.serverName, request.serverVersion, request.serverNo);
-                                    // create subscribes map
-                                    let mut subs = subscribes.lock().unwrap();
-                                    match subs.get_mut(&key) {
-                                        None => {
-                                            subs.insert(key, Vec::new());
-                                        },
-                                        Some(_) => {}
-                                    }
-                                } else if request.mode == requestModeSending && request.identify == requestIdentifyPublish {
-                                    // handle server send data
-                                    let key = CConnect::joinKey(request.serverName.clone(), request.serverVersion.clone(), request.serverNo.clone());
-                                    // broadcast in thread pool
-                                    let pool = threadPool.lock().unwrap();
-                                    let subscribes = subscribes.clone();
-                                    let storageFile = storageFile.clone();
-                                    let contentStatic = contentStatic.clone();
-                                    pool.execute(move || {
-                                        let mut subs = subscribes.lock().unwrap();
-                                        let sf = storageFile.lock().unwrap();
-                                        let cs = contentStatic.lock().unwrap();
-                                        if let Some(subQueue) = subs.get_mut(&key) {
-                                            let mut removes = Vec::new();
-                                            let mut index = 0;
-                                            let content = vec![request.data.clone(), "\n".to_string()].join("");
-                                            let content = cs.full(&key, &request.logType, &request.topic, &content);
-                                            if request.storageMode == storageModeFile {
-                                                sf.write(&key, &request.logType, &content);
-                                                sf.write(&key, "full", &content);
-                                                // if cfg!(all(target_os="linux", target_arch="arm")) {
-                                                // } else {
-                                                //     sf.write(&key, &request.logType, &content);
-                                                // }
-                                            }
-                                            for sub in &(*subQueue) {
-                                            	let mut isSend = false;
-                                            	if (sub.topic != "" && sub.logType == "") && request.topic != sub.topic {
-                                            		isSend = false;
-                                            	} else if (sub.logType != "" && sub.topic == "") && request.logType != sub.logType {
-                                            		isSend = false;
-                                            	} else if (sub.logType != "" && sub.topic != "") && (request.logType != sub.logType || request.topic != sub.topic) {
-                                            		isSend = false;
-                                            	} else {
-                                            		isSend = true;
-            	                                }
-                                                let mut writer = BufWriter::new(&sub.stream);
-                                                if isSend {
-            	                                    writer.write_all(content.as_bytes());
-            	                                } else {
-            	                                	writer.write_all(b"\n");
-            	                                }
-                                                if let Err(e) = writer.flush() {
-                                                    // (*subQueue).remove_item(sub);
-                                                    removes.push(index);
-                                                }
-                                                index += 1;
-                                            }
-                                            for removeIndex in removes {
-                                                println!("remove index: {}", removeIndex);
-                                                (*subQueue).remove(removeIndex);
-                                            }
-                                        };
-                                    });
-                                } else if request.mode == requestModeConnect && request.identify == requestIdentifySubscribe {
-                                    let key = CConnect::joinKey(request.serverName.clone(), request.serverVersion.clone(), request.serverNo.clone());
-                                    let mut subs = subscribes.lock().unwrap();
-                                    let sub = CSubscribeInfo {
-                                        stream: stream,
-                                        topic: request.topic,
-                                        logType: request.logType,
-                                        serverName: request.serverName,
-                                        serverVersion: request.serverVersion,
-                                        serverNo: request.serverNo
-                                    };
-                                    match subs.get_mut(&key) {
-                                        Some(value) => {
-                                            (*value).push(sub);
-                                        },
-                                        None => {
-                                            let mut v = Vec::new();
-                                            v.push(sub);
-                                            subs.insert(key, v);
-                                        }
-                                    };
+                        let line = match line {
+                            Ok(line) => line,
+                            Err(_) => continue,
+                        };
+                        let mut error: u32 = 0;
+                        let mut errorString: String = String::from("success");
+                        loop {
+                            let request = match json::decode(&line) {
+                                Ok(req) => req,
+                                Err(_) => continue,
+                            };
+                            let request: CRequest = request;
+                            // create exchange
+                            if request.mode == requestModeCreateExchange {
+                                if let Err(_) = dbConnect.createExchange(&request.exchangeName, &request.exchangeType) {
+                                    break;
+                                }
+                            } else if request.mode == requestModeCreateQueue {
+                                if let Err(_) = dbConnect.createQueue(&request.queueName, &request.queueType) {
+                                    break;
+                                }
+                            } else if request.mode == requestModeCreateBind {
+                                if let Err(_) = dbConnect.createBind(&request.exchangeName, &request.queueName, &request.routerKey) {
                                     break;
                                 }
                             }
+                            break
+                        }
+                        let res = CResponse{
+                            error: error,
+                            errorString: errorString,
+                        };
+                        let encode = match json::encode(&res) {
+                            Ok(encode) => encode,
+                            Err(_) => continue,
+                        };
+                        if let Err(err) = writer.write_all(encode.as_bytes()) {
+                            continue
+                        }
+                        if let Err(err) = writer.flush() {
+                            continue
                         }
                     }
                 }
@@ -197,8 +164,6 @@ impl CConnect {
         let conn = CConnect{
             subscribes: HashMap::new(),
             queuePool: CThreadPool::new(queueThreadMax),
-            storageFile: CFile::new(),
-            content: CContent::new()
         };
         conn
     }

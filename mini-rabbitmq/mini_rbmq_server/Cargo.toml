@@ -15,3 +15,4 @@ serde_json = "*"
 rustc-serialize = "*"
 
 rust_parse = { git = "https://github.com/MwlLj/rust_parse" }
+rust_pool = { git = "https://github.com/MwlLj/rust-pool" }
