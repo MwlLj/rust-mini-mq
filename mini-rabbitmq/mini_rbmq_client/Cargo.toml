@@ -5,3 +5,5 @@ authors = ["MwlLj <731025894@qq.com>"]
 edition = "2018"
 
 [dependencies]
+rustc-serialize = "*"
+rust_parse = { git = "https://github.com/MwlLj/rust_parse" }
