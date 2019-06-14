@@ -72,6 +72,7 @@ pub struct CConnect {
     queueThreadSet: HashSet<String>,
     sender: mpsc::Sender<CChannelData>,
     receiver: mpsc::Receiver<CChannelData>,
+    threadMax: usize,
     queuePool: CThreadPool,
 }
 
@@ -87,6 +88,8 @@ impl CConnect {
         let threadPool = Arc::new(Mutex::new(self.queuePool));
         let queueThreadSet = Arc::new(Mutex::new(self.queueThreadSet));
         let sender = Arc::new(Mutex::new(self.sender));
+        let receiver = Arc::new(Mutex::new(self.receiver));
+        CConnect::dispatch(consumers.clone(), queueThreadSet.clone(), self.threadMax, receiver.clone());
         for stream in listener.incoming() {
             let consumers = consumers.clone();
             let threadPool = threadPool.clone();
@@ -339,14 +342,15 @@ impl CConnect {
 }
 
 impl CConnect {
-    pub fn new(queueThreadMax: usize) -> CConnect {
+    pub fn new(threadMax: usize) -> CConnect {
         let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
         let conn = CConnect{
             consumers: HashMap::new(),
             queueThreadSet: HashSet::new(),
             sender: sender,
             receiver: receiver,
-            queuePool: CThreadPool::new(queueThreadMax),
+            threadMax: threadMax,
+            queuePool: CThreadPool::new(threadMax),
         };
         conn
     }
