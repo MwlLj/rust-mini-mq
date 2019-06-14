@@ -85,9 +85,13 @@ impl CConnect {
         let listener = TcpListener::bind(addr).unwrap();
         let consumers = Arc::new(Mutex::new(self.consumers));
         let threadPool = Arc::new(Mutex::new(self.queuePool));
+        let queueThreadSet = Arc::new(Mutex::new(self.queueThreadSet));
+        let sender = Arc::new(Mutex::new(self.sender));
         for stream in listener.incoming() {
             let consumers = consumers.clone();
             let threadPool = threadPool.clone();
+            let queueThreadSet = queueThreadSet.clone();
+            let sender = sender.clone();
             thread::spawn(move || {
                 let connUuid = Uuid::new_v4();
                 if let Ok(stream) = stream {
@@ -116,12 +120,16 @@ impl CConnect {
                             return
                         }
                     }
-                    let dbConnect = match sqlite3::CSqlite3::connect(&vhost) {
+                    let dbConnect = Arc::new(Mutex::new(match sqlite3::CSqlite3::connect(&vhost) {
                         Ok(conn) => conn,
                         Err(err) => {
                             println!("{:?}", err);
                             return
                         }
+                    }));
+                    let dbConn = match dbConnect.lock() {
+                        Ok(dbConn) => dbConn,
+                        Err(_) => return
                     };
                     for line in reader.lines() {
                         let line = match line {
@@ -138,17 +146,17 @@ impl CConnect {
                             let request: CRequest = request;
                             if request.mode == requestModeCreateExchange {
                                 // create exchange
-                                if let Err(_) = dbConnect.createExchange(&request.exchangeName, &request.exchangeType) {
+                                if let Err(_) = dbConn.createExchange(&request.exchangeName, &request.exchangeType) {
                                     break;
                                 }
                             } else if request.mode == requestModeCreateQueue {
                                 // create queue
-                                if let Err(_) = dbConnect.createQueue(&request.queueName, &request.queueType) {
+                                if let Err(_) = dbConn.createQueue(&request.queueName, &request.queueType) {
                                     break;
                                 }
                             } else if request.mode == requestModeCreateBind {
                                 // create bind
-                                if let Err(_) = dbConnect.createBind(&request.exchangeName, &request.queueName, &request.routerKey) {
+                                if let Err(_) = dbConn.createBind(&request.exchangeName, &request.queueName, &request.routerKey) {
                                     break;
                                 }
                             } else if request.mode == requestModeConsumer {
@@ -172,9 +180,10 @@ impl CConnect {
                                     None => {
                                         let mut v = Vec::new();
                                         v.push(cons);
-                                        consumers.insert(request.queueName, v);
+                                        consumers.insert(request.queueName.to_string(), v);
                                     },
                                 };
+                                CConnect::notifyConsumer(queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
                             }
                             break
                         }
