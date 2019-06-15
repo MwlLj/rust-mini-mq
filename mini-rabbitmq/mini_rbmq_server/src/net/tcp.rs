@@ -36,6 +36,7 @@ const requestModeCreateQueue: &str = "create-queue";
 const requestModeCreateBind: &str = "create-bind";
 const requestModePublish: &str = "publish";
 const requestModeConsumer: &str = "consumer";
+const requestModeAck: &str = "ack";
 
 const responseModeResult: &str = "result";
 const responseModeData: &str = "data";
@@ -51,7 +52,8 @@ pub struct CRequest {
     queueName: String,
     queueType: String,
     routerKey: String,
-    data: String
+    data: String,
+    ackResult: String
 }
 
 #[derive(RustcDecodable, RustcEncodable)]
@@ -62,13 +64,23 @@ pub struct CResponse {
     errorString: String
 }
 
+struct CAckInfo {
+    ackResult: String
+}
+
 pub struct CConsumerInfo {
     stream: TcpStream,
-    connUuid: String
+    connUuid: String,
+    ackReceiver: mpsc::Receiver<CAckInfo>
+}
+
+struct CAckSender {
+    ackSender: mpsc::Sender<CAckInfo>
 }
 
 pub struct CConnect {
     consumers: HashMap<String, Vec<CConsumerInfo>>,
+    acks: HashMap<String, CAckSender>,
     queueThreadSet: HashSet<String>,
     sender: mpsc::Sender<CChannelData>,
     receiver: mpsc::Receiver<CChannelData>,
@@ -85,13 +97,15 @@ impl CConnect {
     pub fn start(self, addr: &str) {
         let listener = TcpListener::bind(addr).unwrap();
         let consumers = Arc::new(Mutex::new(self.consumers));
+        let acks = Arc::new(Mutex::new(self.acks));
         let threadPool = Arc::new(Mutex::new(self.queuePool));
         let queueThreadSet = Arc::new(Mutex::new(self.queueThreadSet));
         let sender = Arc::new(Mutex::new(self.sender));
         let receiver = Arc::new(Mutex::new(self.receiver));
-        CConnect::dispatch(consumers.clone(), queueThreadSet.clone(), self.threadMax, receiver.clone());
+        CConnect::dispatch(consumers.clone(), acks.clone(), queueThreadSet.clone(), self.threadMax, receiver.clone());
         for stream in listener.incoming() {
             let consumers = consumers.clone();
+            let acks = acks.clone();
             let threadPool = threadPool.clone();
             let queueThreadSet = queueThreadSet.clone();
             let sender = sender.clone();
@@ -130,12 +144,7 @@ impl CConnect {
                             return
                         }
                     }));
-                    // let dbConn = match dbConnect.lock() {
-                    //     Ok(dbConn) => dbConn,
-                    //     Err(_) => return
-                    // };
                     for line in reader.lines() {
-                        println!("recv line");
                         let line = match line {
                             Ok(line) => line,
                             Err(_) => {
@@ -184,34 +193,66 @@ impl CConnect {
                                     Ok(dbConn) => dbConn,
                                     Err(_) => break
                                 };
-                                if let Err(_) = dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
+                                if let Ok(queues) = dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
+                                    for queue in queues {
+                                        CConnect::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &queue);
+                                    }
+                                } else {
                                     break;
                                 }
                             } else if request.mode == requestModeConsumer {
                                 // consumer
-                                let mut consumers = match consumers.lock() {
-                                    Ok(consumers) => consumers,
-                                    Err(_) => break
+                                {
+                                    let mut consumes = match consumers.lock() {
+                                        Ok(consumes) => consumes,
+                                        Err(_) => break
+                                    };
+                                    let mut acks = match acks.lock() {
+                                        Ok(acks) => acks,
+                                        Err(_) => break,
+                                    };
+                                    let stream = match stream.try_clone() {
+                                        Ok(stream) => stream,
+                                        Err(_) => break
+                                    };
+                                    let (s, r) = mpsc::channel();
+                                    let cons = CConsumerInfo{
+                                        stream: stream,
+                                        connUuid: connUuid.to_string(),
+                                        ackReceiver: r
+                                    };
+                                    match consumes.get_mut(&request.queueName) {
+                                        Some(value) => {
+                                            (*value).push(cons);
+                                        },
+                                        None => {
+                                            let mut v = Vec::new();
+                                            v.push(cons);
+                                            consumes.insert(request.queueName.to_string(), v);
+                                        },
+                                    };
+                                    match acks.get_mut(&connUuid.to_string()) {
+                                        Some(value) => {
+                                            (*value).ackSender = s;
+                                        },
+                                        None => {},
+                                    };
+                                }
+                                CConnect::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
+                            } else if request.mode == requestModeAck {
+                                // ack
+                                let mut acks = match acks.try_lock() {
+                                    Ok(acks) => acks,
+                                    Err(_) => {
+                                        println!("try lock error");
+                                        break;
+                                    }
                                 };
-                                let stream = match stream.try_clone() {
-                                    Ok(stream) => stream,
-                                    Err(_) => break
-                                };
-                                let cons = CConsumerInfo{
-                                    stream: stream,
-                                    connUuid: connUuid.to_string(),
-                                };
-                                match consumers.get_mut(&request.queueName) {
-                                    Some(value) => {
-                                        (*value).push(cons);
-                                    },
-                                    None => {
-                                        let mut v = Vec::new();
-                                        v.push(cons);
-                                        consumers.insert(request.queueName.to_string(), v);
-                                    },
-                                };
-                                CConnect::notifyConsumer(queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
+                                if let Some(send) = acks.get(&connUuid.to_string()) {
+                                    send.ackSender.send(CAckInfo{
+                                        ackResult: request.ackResult.to_string(),
+                                    });
+                                }
                             }
                             break
                         }
@@ -226,17 +267,17 @@ impl CConnect {
                             Err(_) => continue,
                         };
                         if let Err(err) = writer.write_all(CConnect::joinLineFeed(&encode).as_bytes()) {
-                            CConnect::removeConsumer(consumers.clone(), &connUuid.to_string());
+                            CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                             break;
                         };
                         if let Err(err) = writer.flush() {
-                            CConnect::removeConsumer(consumers.clone(), &connUuid.to_string());
+                            CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                             break;
                         };
                     }
                     {
                         // disconnect handle
-                        CConnect::removeConsumer(consumers.clone(), &connUuid.to_string());
+                        CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                     }
                 }
             });
@@ -246,16 +287,18 @@ impl CConnect {
 
 // private
 impl CConnect {
-    fn dispatch(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, threadMax: usize, receiver: Arc<Mutex<mpsc::Receiver<CChannelData>>>) {
+    fn dispatch(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, threadMax: usize, receiver: Arc<Mutex<mpsc::Receiver<CChannelData>>>) {
         for i in 0..threadMax {
             let recv = receiver.clone();
             let queueThreadSet = queueThreadSet.clone();
             let consumers = consumers.clone();
+            let acks = acks.clone();
             thread::spawn(move || {
                 loop {
                     let recv = recv.clone();
                     let queueThreadSet = queueThreadSet.clone();
                     let consumers = consumers.clone();
+                    let acks = acks.clone();
                     let recv = match recv.lock() {
                         Ok(recv) => recv,
                         Err(_) => {
@@ -281,7 +324,7 @@ impl CConnect {
                         Ok(cons) => cons,
                         Err(_) => {
                             println!("get consumers error");
-                            continue;
+                            return false;
                         }
                     };
                     let consumersList = match cons.get(&recv.queueName) {
@@ -290,22 +333,28 @@ impl CConnect {
                         },
                         None => {
                             println!("consumer is not found");
-                            continue;
+                            return false;
                         }
                     };
+                    let length = consumersList.len();
                     while let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, data: &str| {
-                        let length = consumersList.len();
                         if queueType == consts::queue::queueTypeDirect {
                             // rand consumer
                             // random
-                            let index = rand::thread_rng().gen_range(0, length);
-                            let consumer = &consumersList[index];
-                            CConnect::sendToConsumer(consumers.clone(), &consumer, data);
-                            println!("response");
+                            println!("{:?}", length);
+                            if length > 0 {
+                                let index = rand::thread_rng().gen_range(0, length);
+                                let consumer = &consumersList[index];
+                                if !CConnect::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, data) {
+                                    return false;
+                                }
+                            }
                         } else if queueType == consts::queue::queueTypeFanout {
                             // send to all consumer
                             for consumer in consumersList {
-                                CConnect::sendToConsumer(consumers.clone(), &consumer, data);
+                                if !CConnect::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, data) {
+                                    return false;
+                                }
                             }
                         }
                         return true;
@@ -318,7 +367,7 @@ impl CConnect {
         }
     }
 
-    fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, consumer: &CConsumerInfo, data: &str) -> bool {
+    fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, consumer: &CConsumerInfo, data: &str) -> bool {
         // let consumer = match consumer.lock() {
         //     Ok(consumer) => consumer,
         //     Err(_) => return,
@@ -336,29 +385,23 @@ impl CConnect {
                 return false
             }
         };
-        println!("{:?}", &CConnect::joinLineFeed(&encode));
         writer.write_all(CConnect::joinLineFeed(&encode).as_bytes());
         if let Err(e) = writer.flush() {
-            CConnect::removeConsumer(Arc::clone(&consumers), &consumer.connUuid);
+            CConnect::removeConsumer(Arc::clone(&consumers), acks.clone(), &consumer.connUuid);
             println!("send data error, err: {}", e);
             return false;
         };
-        let mut reader = BufReader::new(&consumer.stream);
-        let mut ack = String::new();
-        println!("read_line");
-        match reader.read_line(&mut ack) {
-            Ok(size) => {},
-            Err(err) => {
-                println!("{:?}", err);
+        let recv = match consumer.ackReceiver.recv() {
+            Ok(recv) => recv,
+            Err(_) => {
                 return false;
             }
         };
-        if ack == consts::define::ackTrue {
-            println!("true");
+        if recv.ackResult == consts::define::ackTrue {
             return true;
-        } else {
-            println!("false");
-            return false;
+        }
+        else {
+            return true;
         }
     }
 
@@ -366,7 +409,7 @@ impl CConnect {
         return vec![content, "\n"].join("");
     }
 
-    fn removeConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, connUuid: &str) {
+    fn removeConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, connUuid: &str) {
         let mut consumers = match consumers.lock() {
             Ok(cons) => cons,
             Err(_) => return
@@ -383,12 +426,27 @@ impl CConnect {
             }
             if index != -1 {
                 value.remove(index as usize);
-                print!("remove index: {}", &index);
+                println!("remove index: {}", index);
             }
         }
+        let mut acks = match acks.lock() {
+            Ok(acks) => acks,
+            Err(_) => return
+        };
+        acks.remove(connUuid);
     }
 
-    fn notifyConsumer(queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
+    fn notifyConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
+        let mut consumers = match consumers.lock() {
+            Ok(consumers) => consumers,
+            Err(_) => return,
+        };
+        match consumers.get(queueName) {
+            Some(cons) => {},
+            None => {
+                return;
+            },
+        };
         let mut set = match queueThreadSet.lock() {
             Ok(set) => set,
             Err(_) => return,
@@ -425,6 +483,7 @@ impl CConnect {
         let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
         let conn = CConnect{
             consumers: HashMap::new(),
+            acks: HashMap::new(),
             queueThreadSet: HashSet::new(),
             sender: sender,
             receiver: receiver,

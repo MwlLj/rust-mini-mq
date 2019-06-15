@@ -22,10 +22,11 @@ fn main() {
     if let Err(_) = t.createBind("test_exchange", "test_queue", "key1") {
         return;
     };
-    if let Err(_) = t.publish("test_exchange", "key1", "hello world") {
-        return;
+    loop {
+        if let Err(_) = t.publish("test_exchange", "key1", "hello world") {
+            return;
+        }
     }
-    println!("success");
 
     loop {
         thread::sleep(time::Duration::from_millis(1000));

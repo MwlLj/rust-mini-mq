@@ -35,7 +35,7 @@ const argLogType: &str = "-log-type";
 const argTopic: &str = "-topic";
 
 #[derive(RustcDecodable, RustcEncodable)]
-struct CRequest {
+pub struct CRequest {
     mode: String,
     identify: String,
     vhost: String,
@@ -44,7 +44,8 @@ struct CRequest {
     queueName: String,
     queueType: String,
     routerKey: String,
-    data: String
+    data: String,
+    ackResult: String
 }
 
 #[derive(RustcDecodable, RustcEncodable)]
@@ -71,7 +72,8 @@ impl CTcp {
             queueName: "".to_string(),
             queueType: "".to_string(),
             routerKey: "".to_string(),
-            data: "".to_string()
+            data: "".to_string(),
+            ackResult: "".to_string()
         };
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
@@ -97,7 +99,8 @@ impl CTcp {
             queueName: "".to_string(),
             queueType: "".to_string(),
             routerKey: "".to_string(),
-            data: "".to_string()
+            data: "".to_string(),
+            ackResult: "".to_string()
         };
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
@@ -125,7 +128,8 @@ impl CTcp {
             queueName: queueName.to_string(),
             queueType: queueType.to_string(),
             routerKey: "".to_string(),
-            data: "".to_string()
+            data: "".to_string(),
+            ackResult: "".to_string()
         };
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
@@ -153,7 +157,8 @@ impl CTcp {
             queueName: queueName.to_string(),
             queueType: "".to_string(),
             routerKey: routerKey.to_string(),
-            data: "".to_string()
+            data: "".to_string(),
+            ackResult: "".to_string()
         };
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
@@ -181,7 +186,8 @@ impl CTcp {
             queueName: "".to_string(),
             queueType: "".to_string(),
             routerKey: routerKey.to_string(),
-            data: data.to_string()
+            data: data.to_string(),
+            ackResult: "".to_string()
         };
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
@@ -209,7 +215,8 @@ impl CTcp {
             queueName: queueName.to_string(),
             queueType: "".to_string(),
             routerKey: "".to_string(),
-            data: "".to_string()
+            data: "".to_string(),
+            ackResult: "".to_string()
         };
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,

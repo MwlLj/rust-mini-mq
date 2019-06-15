@@ -9,19 +9,19 @@ fn main() {
         Err(_) => return
     };
     if let Err(_) = t.connect("test-vhost") {
-        return;
+        // return;
     };
     if let Err(_) = t.createExchange("test_exchange", "direct") {
-        return;
+        // return;
     };
     if let Err(_) = t.createQueue("test_queue", "direct") {
-        return;
+        // return;
     };
     if let Err(_) = t.createBind("test_exchange", "test_queue", "key1") {
-        return;
+        // return;
     };
     if let Err(_) = t.consumer("test_queue") {
-        return;
+        // return;
     }
     t.consume(|ack: &tcp_ack::CAck, data: &str| {
         println!("{:?}", data);

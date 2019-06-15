@@ -125,11 +125,15 @@ impl CSqlite3 {
         Ok(())
     }
 
-    pub fn addData(&self, exchangeName: &str, routerKey: &str, data: &str) -> sqlite3::Result<()> {
+    pub fn addData(&self, exchangeName: &str, routerKey: &str, data: &str) -> Result<Vec<String>, &str> {
         let mut infos = self.getBindInfoByExchangeRouterKey(exchangeName, routerKey);
         let length = infos.len();
         if length == 0 {
-            return Ok(());
+            return Err("no queue be bind");
+        }
+        let mut queues = Vec::new();
+        for info in &infos {
+            queues.push(info.queueName.to_string());
         }
         let first = &infos[0];
         if first.exchangeType == exchange::exchangeTypeDirect {
@@ -164,13 +168,10 @@ impl CSqlite3 {
         }
         if result {
             self.commit();
-            Ok(())
+            Ok(queues)
         } else {
             self.rollback();
-            Err(sqlite3::Error{
-                code: Some(1),
-                message: Some("inner error".to_string())
-            })
+            Err("inner error")
         }
     }
 
