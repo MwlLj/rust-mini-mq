@@ -1,0 +1,8 @@
+[package]
+name = "publish"
+version = "0.1.0"
+authors = ["MwlLj <731025894@qq.com>"]
+edition = "2018"
+
+[dependencies]
+mini_rbmq_client = { path = "../../../" }

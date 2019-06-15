@@ -6,20 +6,24 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::net::TcpStream;
 use std::thread;
+use std::sync::Mutex;
+use std::sync::Arc;
 
 use rustc_serialize::json;
 use rust_parse::cmd::CCmd;
+
+use super::super::consts;
+use super::tcp_ack;
 
 const requestModeConnect: &str = "connect";
 const requestModeCreateExchange: &str = "create-exchange";
 const requestModeCreateQueue: &str = "create-queue";
 const requestModeCreateBind: &str = "create-bind";
-const requestIdentifyPublish: &str = "publish";
-const requestIdentifySubscribe: &str = "subscribe";
-const storageModeNone: &str = "none";
-const storageModeFile: &str = "file";
-const logTypeMessage: &str = "message";
-const logTypeError: &str = "error";
+const requestModePublish: &str = "publish";
+const requestModeConsumer: &str = "consumer";
+
+const responseModeResult: &str = "result";
+const responseModeData: &str = "data";
 
 const argServer: &str = "-server";
 const argServerName: &str = "-server-name";
@@ -41,6 +45,14 @@ struct CRequest {
     queueType: String,
     routerKey: String,
     data: String
+}
+
+#[derive(RustcDecodable, RustcEncodable)]
+pub struct CResponse {
+    mode: String,
+    data: String,
+    error: u32,
+    errorString: String
 }
 
 pub struct CTcp {
@@ -65,8 +77,7 @@ impl CTcp {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
         };
-        let content = vec![encoded, "\n".to_string()].join("");
-        if let Err(err) = writer.write_all(content.as_bytes()) {
+        if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encoded).as_bytes()) {
             return Err("write error");
         }
         if let Err(err) = writer.flush() {
@@ -92,11 +103,12 @@ impl CTcp {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
         };
-        let content = vec![encoded, "\n".to_string()].join("");
-        if let Err(err) = writer.write_all(content.as_bytes()) {
+        if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encoded).as_bytes()) {
+            println!("create exchange write error");
             return Err("write error");
         }
         if let Err(err) = writer.flush() {
+            println!("create exchange write error");
             return Err("flush error");
         }
         Ok(())
@@ -119,11 +131,12 @@ impl CTcp {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
         };
-        let content = vec![encoded, "\n".to_string()].join("");
-        if let Err(err) = writer.write_all(content.as_bytes()) {
+        if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encoded).as_bytes()) {
+            println!("create queue write error");
             return Err("write error");
         }
         if let Err(err) = writer.flush() {
+            println!("create queue flush error");
             return Err("flush error");
         }
         Ok(())
@@ -146,14 +159,137 @@ impl CTcp {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
         };
-        let content = vec![encoded, "\n".to_string()].join("");
-        if let Err(err) = writer.write_all(content.as_bytes()) {
+        if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encoded).as_bytes()) {
+            println!("create bind write error");
+            return Err("write error");
+        }
+        if let Err(err) = writer.flush() {
+            println!("create bind write error");
+            return Err("flush error");
+        }
+        Ok(())
+    }
+
+    pub fn publish(&self, exchangeName: &str, routerKey: &str, data: &str) -> Result<(), &str> {
+        let mut writer = BufWriter::new(&self.stream);
+        let connRequest = CRequest {
+            mode: requestModePublish.to_string(),
+            identify: "".to_string(),
+            vhost: "".to_string(),
+            exchangeName: exchangeName.to_string(),
+            exchangeType: "".to_string(),
+            queueName: "".to_string(),
+            queueType: "".to_string(),
+            routerKey: routerKey.to_string(),
+            data: data.to_string()
+        };
+        let encoded = match json::encode(&connRequest) {
+            Ok(encoded) => encoded,
+            Err(_) => return Err("json encode error")
+        };
+        if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encoded).as_bytes()) {
+            println!("publish write error");
+            return Err("write error");
+        }
+        if let Err(err) = writer.flush() {
+            println!("publish flush error");
+            return Err("flush error");
+        }
+        Ok(())
+    }
+
+    pub fn consumer(&self, queueName: &str) -> Result<(), &str> {
+        let mut writer = BufWriter::new(&self.stream);
+        let connRequest = CRequest {
+            mode: requestModeConsumer.to_string(),
+            identify: "".to_string(),
+            vhost: "".to_string(),
+            exchangeName: "".to_string(),
+            exchangeType: "".to_string(),
+            queueName: queueName.to_string(),
+            queueType: "".to_string(),
+            routerKey: "".to_string(),
+            data: "".to_string()
+        };
+        let encoded = match json::encode(&connRequest) {
+            Ok(encoded) => encoded,
+            Err(_) => return Err("json encode error")
+        };
+        if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encoded).as_bytes()) {
             return Err("write error");
         }
         if let Err(err) = writer.flush() {
             return Err("flush error");
         }
         Ok(())
+    }
+
+    pub fn consume<Func>(&self, callback: Func) -> Result<(), &str>
+        where Func: Fn(&tcp_ack::CAck, &str) {
+        let mut reader = BufReader::new(&self.stream);
+        let mut writer = BufWriter::new(&self.stream);
+        let cb = Arc::new(Mutex::new(callback));
+        for line in reader.lines() {
+            let cb = cb.clone();
+            let cb = match cb.lock() {
+                Ok(cb) => cb,
+                Err(_) => break,
+            };
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => break,
+            };
+            match json::decode(&line) {
+                Ok(res) => {
+                    let response: CResponse = res;
+                    if response.mode == responseModeData {
+                        let stream = match self.stream.try_clone() {
+                            Ok(stream) => stream,
+                            Err(_) => {
+                                println!("stream clone error");
+                                break;
+                            }
+                        };
+                        cb(&tcp_ack::CAck::new(stream), &response.data);
+                    }
+                },
+                Err(_) => {
+                    println!("decode data json error, {}", &line);
+                    break
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn next(&self) -> Option<String> {
+        let mut reader = BufReader::new(&self.stream);
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(size) => {
+            },
+            Err(err) => {
+                println!("{:?}", err);
+                return None;
+            }
+        }
+        if let Ok(res) = json::decode(&line) {
+            let response: CResponse = res;
+            println!("recv response, mode: {}", &response.mode);
+            if response.mode == responseModeData {
+                println!("{:?}", &response.data);
+                return Some(response.data);
+            } else {
+                return Some(response.data);
+            }
+        }
+        None
+    }
+}
+
+impl CTcp {
+    fn joinLineFeed(content: &str) -> String {
+        return vec![content, "\n"].join("");
     }
 }
 

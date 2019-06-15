@@ -1,0 +1,28 @@
+[[package]]
+name = "consumer"
+version = "0.1.0"
+dependencies = [
+ "mini_rbmq_client 0.1.0",
+]
+
+[[package]]
+name = "mini_rbmq_client"
+version = "0.1.0"
+dependencies = [
+ "rust_parse 0.1.0 (git+https://github.com/MwlLj/rust_parse)",
+ "rustc-serialize 0.3.24 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "rust_parse"
+version = "0.1.0"
+source = "git+https://github.com/MwlLj/rust_parse#542c3552d7727c0294998e4353a244b64e51348b"
+
+[[package]]
+name = "rustc-serialize"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[metadata]
+"checksum rust_parse 0.1.0 (git+https://github.com/MwlLj/rust_parse)" = "<none>"
+"checksum rustc-serialize 0.3.24 (registry+https://github.com/rust-lang/crates.io-index)" = "dcf128d1287d2ea9d80910b5f1120d0b8eede3fbf1abe91c40d39ea7d51e6fda"

@@ -1,4 +1,5 @@
 pub mod net;
+pub mod consts;
 
 #[cfg(test)]
 mod tests {
