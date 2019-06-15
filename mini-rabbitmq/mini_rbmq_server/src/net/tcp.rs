@@ -34,13 +34,11 @@ const requestModeConnect: &str = "connect";
 const requestModeCreateExchange: &str = "create-exchange";
 const requestModeCreateQueue: &str = "create-queue";
 const requestModeCreateBind: &str = "create-bind";
+const requestModePublish: &str = "publish";
 const requestModeConsumer: &str = "consumer";
-const requestIdentifyPublish: &str = "publish";
-const requestIdentifySubscribe: &str = "subscribe";
-const storageModeNone: &str = "none";
-const storageModeFile: &str = "file";
-const logTypeMessage: &str = "message";
-const logTypeError: &str = "error";
+
+const responseModeResult: &str = "result";
+const responseModeData: &str = "data";
 
 // #[derive(Serialize, Deserialize)]
 #[derive(RustcDecodable, RustcEncodable)]
@@ -58,6 +56,8 @@ pub struct CRequest {
 
 #[derive(RustcDecodable, RustcEncodable)]
 pub struct CResponse {
+    mode: String,
+    data: String,
     error: u32,
     errorString: String
 }
@@ -130,17 +130,21 @@ impl CConnect {
                             return
                         }
                     }));
-                    let dbConn = match dbConnect.lock() {
-                        Ok(dbConn) => dbConn,
-                        Err(_) => return
-                    };
+                    // let dbConn = match dbConnect.lock() {
+                    //     Ok(dbConn) => dbConn,
+                    //     Err(_) => return
+                    // };
                     for line in reader.lines() {
+                        println!("recv line");
                         let line = match line {
                             Ok(line) => line,
-                            Err(_) => continue,
+                            Err(_) => {
+                                println!("disconnect");
+                                break;
+                            }
                         };
-                        let mut error: u32 = 0;
-                        let mut errorString: String = String::from("success");
+                        let mut error: u32 = consts::result::resultOkError;
+                        let mut errorString: String = consts::result::resultOkErrorString.to_string();
                         loop {
                             let request = match json::decode(&line) {
                                 Ok(req) => req,
@@ -149,17 +153,38 @@ impl CConnect {
                             let request: CRequest = request;
                             if request.mode == requestModeCreateExchange {
                                 // create exchange
+                                let dbConn = match dbConnect.lock() {
+                                    Ok(dbConn) => dbConn,
+                                    Err(_) => break
+                                };
                                 if let Err(_) = dbConn.createExchange(&request.exchangeName, &request.exchangeType) {
                                     break;
                                 }
                             } else if request.mode == requestModeCreateQueue {
                                 // create queue
+                                let dbConn = match dbConnect.lock() {
+                                    Ok(dbConn) => dbConn,
+                                    Err(_) => break
+                                };
                                 if let Err(_) = dbConn.createQueue(&request.queueName, &request.queueType) {
                                     break;
                                 }
                             } else if request.mode == requestModeCreateBind {
                                 // create bind
+                                let dbConn = match dbConnect.lock() {
+                                    Ok(dbConn) => dbConn,
+                                    Err(_) => break
+                                };
                                 if let Err(_) = dbConn.createBind(&request.exchangeName, &request.queueName, &request.routerKey) {
+                                    break;
+                                }
+                            } else if request.mode == requestModePublish {
+                                // create bind
+                                let dbConn = match dbConnect.lock() {
+                                    Ok(dbConn) => dbConn,
+                                    Err(_) => break
+                                };
+                                if let Err(_) = dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
                                     break;
                                 }
                             } else if request.mode == requestModeConsumer {
@@ -191,6 +216,8 @@ impl CConnect {
                             break
                         }
                         let res = CResponse{
+                            mode: responseModeResult.to_string(),
+                            data: "".to_string(),
                             error: error,
                             errorString: errorString,
                         };
@@ -198,7 +225,7 @@ impl CConnect {
                             Ok(encode) => encode,
                             Err(_) => continue,
                         };
-                        if let Err(err) = writer.write_all(encode.as_bytes()) {
+                        if let Err(err) = writer.write_all(CConnect::joinLineFeed(&encode).as_bytes()) {
                             CConnect::removeConsumer(consumers.clone(), &connUuid.to_string());
                             break;
                         };
@@ -246,18 +273,23 @@ impl CConnect {
                     let dbConn = match recv.dbConn.lock() {
                         Ok(dbConn) => dbConn,
                         Err(_) => {
+                            println!("get dbconn error");
                             continue;
                         }
                     };
                     let cons = match consumers.lock() {
                         Ok(cons) => cons,
                         Err(_) => {
+                            println!("get consumers error");
                             continue;
                         }
                     };
                     let consumersList = match cons.get(&recv.queueName) {
-                        Some(li) => li,
+                        Some(li) => {
+                            li
+                        },
                         None => {
+                            println!("consumer is not found");
                             continue;
                         }
                     };
@@ -268,14 +300,13 @@ impl CConnect {
                             // random
                             let index = rand::thread_rng().gen_range(0, length);
                             let consumer = &consumersList[index];
-                            let mut writer = BufWriter::new(&consumer.stream);
-                            let content = vec![data.clone(), "\n"].join("");
-                            writer.write_all(content.as_bytes());
-                            if let Err(e) = writer.flush() {
-                                CConnect::removeConsumer(Arc::clone(&consumers), &consumer.connUuid);
-                            };
+                            CConnect::sendToConsumer(consumers.clone(), &consumer, data);
+                            println!("response");
                         } else if queueType == consts::queue::queueTypeFanout {
                             // send to all consumer
+                            for consumer in consumersList {
+                                CConnect::sendToConsumer(consumers.clone(), &consumer, data);
+                            }
                         }
                         return true;
                     }) {
@@ -285,6 +316,54 @@ impl CConnect {
                 }
             });
         }
+    }
+
+    fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, consumer: &CConsumerInfo, data: &str) -> bool {
+        // let consumer = match consumer.lock() {
+        //     Ok(consumer) => consumer,
+        //     Err(_) => return,
+        // };
+        let mut writer = BufWriter::new(&consumer.stream);
+        let encode = match json::encode(&CResponse{
+            mode: responseModeData.to_string(),
+            data: data.to_string(),
+            error: consts::result::resultOkError,
+            errorString: consts::result::resultOkErrorString.to_string()
+        }) {
+            Ok(encode) => encode,
+            Err(_) => {
+                println!("encode data error, data: {}", data);
+                return false
+            }
+        };
+        println!("{:?}", &CConnect::joinLineFeed(&encode));
+        writer.write_all(CConnect::joinLineFeed(&encode).as_bytes());
+        if let Err(e) = writer.flush() {
+            CConnect::removeConsumer(Arc::clone(&consumers), &consumer.connUuid);
+            println!("send data error, err: {}", e);
+            return false;
+        };
+        let mut reader = BufReader::new(&consumer.stream);
+        let mut ack = String::new();
+        println!("read_line");
+        match reader.read_line(&mut ack) {
+            Ok(size) => {},
+            Err(err) => {
+                println!("{:?}", err);
+                return false;
+            }
+        };
+        if ack == consts::define::ackTrue {
+            println!("true");
+            return true;
+        } else {
+            println!("false");
+            return false;
+        }
+    }
+
+    fn joinLineFeed(content: &str) -> String {
+        return vec![content, "\n"].join("");
     }
 
     fn removeConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, connUuid: &str) {
