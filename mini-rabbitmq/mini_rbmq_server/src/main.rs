@@ -57,7 +57,7 @@ fn dbTest() {
 }
 
 fn tcpTest() {
-    let conn = tcp::CConnect::new(10);
+    let conn = tcp::CTcp::new(10);
     conn.start("0.0.0.0:60000");
 }
 
