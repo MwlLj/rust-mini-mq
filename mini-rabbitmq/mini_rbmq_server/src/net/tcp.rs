@@ -163,13 +163,22 @@ impl CTcp {
                             return
                         }
                     }));
-                    let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
-                    let connect = CConnect{
-                        consumers: HashMap::new(),
-                        acks: HashMap::new(),
-                        queueThreadSet: HashSet::new(),
-                        sender: sender,
-                        receiver: receiver
+                    let connects = match connects.lock() {
+                        Ok(connects) => connects,
+                        Err(_) => return,
+                    };
+                    let connect = match connects.get(&vhost) {
+                        Some(connect) => connect,
+                        None => {
+                            let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
+                            CConnect{
+                                consumers: HashMap::new(),
+                                acks: HashMap::new(),
+                                queueThreadSet: HashSet::new(),
+                                sender: sender,
+                                receiver: receiver
+                            }
+                        },
                     };
                     let consumers = Arc::new(Mutex::new(connect.consumers));
                     let acks = Arc::new(Mutex::new(connect.acks));
