@@ -41,6 +41,11 @@ const requestModeAck: &str = "ack";
 const responseModeResult: &str = "result";
 const responseModeData: &str = "data";
 
+const ackResultSuccess: u32 = 0;
+const ackResultFailed: u32 = 1;
+const ackResultTrue: u32 = 2;
+const ackResultFalse: u32 = 3;
+
 // #[derive(Serialize, Deserialize)]
 #[derive(RustcDecodable, RustcEncodable)]
 pub struct CRequest {
@@ -59,6 +64,7 @@ pub struct CRequest {
 #[derive(RustcDecodable, RustcEncodable)]
 pub struct CResponse {
     mode: String,
+    queueName: String,
     data: String,
     error: u32,
     errorString: String
@@ -235,7 +241,11 @@ impl CConnect {
                                         Some(value) => {
                                             (*value).ackSender = s;
                                         },
-                                        None => {},
+                                        None => {
+                                            acks.insert(connUuid.to_string(), CAckSender{
+                                                ackSender: s,
+                                            });
+                                        },
                                     };
                                 }
                                 CConnect::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
@@ -249,15 +259,18 @@ impl CConnect {
                                     }
                                 };
                                 if let Some(send) = acks.get(&connUuid.to_string()) {
-                                    send.ackSender.send(CAckInfo{
+                                    if let Err(err) = send.ackSender.send(CAckInfo{
                                         ackResult: request.ackResult.to_string(),
-                                    });
+                                    }) {
+                                        println!("ackSender send error: {}", err);
+                                    }
                                 }
                             }
                             break
                         }
                         let res = CResponse{
                             mode: responseModeResult.to_string(),
+                            queueName: "".to_string(),
                             data: "".to_string(),
                             error: error,
                             errorString: errorString,
@@ -267,16 +280,19 @@ impl CConnect {
                             Err(_) => continue,
                         };
                         if let Err(err) = writer.write_all(CConnect::joinLineFeed(&encode).as_bytes()) {
-                            CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
+                            println!("send response write all error");
+                            // CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                             break;
                         };
                         if let Err(err) = writer.flush() {
-                            CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
+                            println!("send response flush error, {}", err);
+                            // CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                             break;
                         };
                     }
                     {
                         // disconnect handle
+                        println!("remove consumer");
                         CConnect::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                     }
                 }
@@ -337,22 +353,32 @@ impl CConnect {
                         }
                     };
                     let length = consumersList.len();
+                    if length == 0 {
+                        continue;
+                    }
                     while let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, data: &str| {
+                        let length = consumersList.len();
+                        if length == 0 {
+                            return false;
+                        }
                         if queueType == consts::queue::queueTypeDirect {
                             // rand consumer
                             // random
-                            println!("{:?}", length);
                             if length > 0 {
                                 let index = rand::thread_rng().gen_range(0, length);
                                 let consumer = &consumersList[index];
-                                if !CConnect::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, data) {
+                                let r = CConnect::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, &recv.queueName, data);
+                                if r == ackResultFalse || r == ackResultFailed {
+                                    println!("error 1");
                                     return false;
                                 }
                             }
                         } else if queueType == consts::queue::queueTypeFanout {
                             // send to all consumer
                             for consumer in consumersList {
-                                if !CConnect::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, data) {
+                                let r = CConnect::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, &recv.queueName, data);
+                                if r == ackResultFalse || r == ackResultFailed {
+                                    println!("error 2");
                                     return false;
                                 }
                             }
@@ -360,6 +386,7 @@ impl CConnect {
                         return true;
                     }) {
                     }
+                    println!("exit consumer");
                     // queue data is empty -> release thread
                     CConnect::removeQueueThreadSet(queueThreadSet.clone(), &recv.queueName);
                 }
@@ -367,7 +394,7 @@ impl CConnect {
         }
     }
 
-    fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, consumer: &CConsumerInfo, data: &str) -> bool {
+    fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, consumer: &CConsumerInfo, queueName: &str, data: &str) -> u32 {
         // let consumer = match consumer.lock() {
         //     Ok(consumer) => consumer,
         //     Err(_) => return,
@@ -375,6 +402,7 @@ impl CConnect {
         let mut writer = BufWriter::new(&consumer.stream);
         let encode = match json::encode(&CResponse{
             mode: responseModeData.to_string(),
+            queueName: queueName.to_string(),
             data: data.to_string(),
             error: consts::result::resultOkError,
             errorString: consts::result::resultOkErrorString.to_string()
@@ -382,26 +410,27 @@ impl CConnect {
             Ok(encode) => encode,
             Err(_) => {
                 println!("encode data error, data: {}", data);
-                return false
+                return ackResultFailed;
             }
         };
         writer.write_all(CConnect::joinLineFeed(&encode).as_bytes());
         if let Err(e) = writer.flush() {
-            CConnect::removeConsumer(Arc::clone(&consumers), acks.clone(), &consumer.connUuid);
             println!("send data error, err: {}", e);
-            return false;
+            // CConnect::removeConsumer(Arc::clone(&consumers), acks.clone(), &consumer.connUuid);
+            return ackResultFailed;
         };
         let recv = match consumer.ackReceiver.recv() {
             Ok(recv) => recv,
-            Err(_) => {
-                return false;
+            Err(err) => {
+                println!("{}", err);
+                return ackResultFailed;
             }
         };
         if recv.ackResult == consts::define::ackTrue {
-            return true;
+            return ackResultTrue;
         }
         else {
-            return true;
+            return ackResultFalse;
         }
     }
 
@@ -441,12 +470,15 @@ impl CConnect {
             Ok(consumers) => consumers,
             Err(_) => return,
         };
-        match consumers.get(queueName) {
-            Some(cons) => {},
+        let cons = match consumers.get(queueName) {
+            Some(cons) => cons,
             None => {
                 return;
             },
         };
+        if cons.len() == 0 {
+            return;
+        }
         let mut set = match queueThreadSet.lock() {
             Ok(set) => set,
             Err(_) => return,
@@ -456,17 +488,19 @@ impl CConnect {
             Err(_) => return,
         };
         match set.get(queueName) {
-            Some(queue) => return,
+            Some(queue) => {
+                println!("queue alreay exist set");
+                return;
+            }
             None => {
-                if let Ok(_) = sender.send(CChannelData{
-                    queueName: queueName.to_string(),
-                    dbConn: dbConn,
-                }) {
-                    // send success -> insert to set
-                    set.insert(queueName.to_string());
-                }
+                // send success -> insert to set
+                set.insert(queueName.to_string());
             }
         };
+        sender.send(CChannelData{
+            queueName: queueName.to_string(),
+            dbConn: dbConn,
+        });
     }
 
     fn removeQueueThreadSet(queueThreadSet: Arc<Mutex<HashSet<String>>>, queueName: &str) {

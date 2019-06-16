@@ -129,6 +129,7 @@ impl CSqlite3 {
         let mut infos = self.getBindInfoByExchangeRouterKey(exchangeName, routerKey);
         let length = infos.len();
         if length == 0 {
+            println!("no queue be bind");
             return Err("no queue be bind");
         }
         let mut queues = Vec::new();
@@ -201,6 +202,9 @@ impl CSqlite3 {
                 count = value;
             }
         });
+        if count == 0 {
+            return None;
+        }
         let result = callback(&queueType, &data);
         if result {
             let sql = format!(
@@ -213,6 +217,8 @@ impl CSqlite3 {
                     return None;
                 }
             }
+        } else {
+            return None;
         }
         if count == 0 {
             None
@@ -277,6 +283,7 @@ impl CSqlite3 {
     }
 
     fn getBindInfoByExchangeRouterKey(&self, exchangeName: &str, routerKey: &str) -> Vec<CGetBindInfo> {
+        // println!("getBindInfoByExchangeRoterKey");
         let mut infos: Vec<CGetBindInfo> = Vec::new();
         self.get(
             "
