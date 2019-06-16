@@ -31,7 +31,7 @@ impl CSqlite3 {
             connect: sqlite3::open(path),
         };
         match storage.createTable() {
-            Err(e) => return Err("create table error"),
+            Err(e) => return Ok(storage),
             Ok(s) => s,
         };
         Ok(storage)
