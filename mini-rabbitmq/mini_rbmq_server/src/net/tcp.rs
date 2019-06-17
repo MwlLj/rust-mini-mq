@@ -85,16 +85,16 @@ struct CAckSender {
 }
 
 pub struct CTcp {
-    connects: HashMap<String, CConnect>,
+    connects: HashMap<String, Arc<Mutex<CConnect>>>,
     threadMax: usize
 }
 
 struct CConnect {
-    consumers: HashMap<String, Vec<CConsumerInfo>>,
-    acks: HashMap<String, CAckSender>,
-    queueThreadSet: HashSet<String>,
-    sender: mpsc::Sender<CChannelData>,
-    receiver: mpsc::Receiver<CChannelData>
+    consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>,
+    acks: Arc<Mutex<HashMap<String, CAckSender>>>,
+    queueThreadSet: Arc<Mutex<HashSet<String>>>,
+    sender: Arc<Mutex<mpsc::Sender<CChannelData>>>,
+    receiver: Arc<Mutex<mpsc::Receiver<CChannelData>>>
 }
 
 pub struct CChannelData {
@@ -115,7 +115,7 @@ impl CTcp {
         // let receiver = Arc::new(Mutex::new(self.receiver));
         for stream in listener.incoming() {
             let connects = connects.clone();
-            let threadMax = threadMax.clone();
+            let tm = threadMax.clone();
             // let consumers = consumers.clone();
             // let acks = acks.clone();
             // let threadPool = threadPool.clone();
@@ -135,6 +135,7 @@ impl CTcp {
                             return
                         }
                     }
+                    println!("1");
                     let mut vhost = String::new();
                     match json::decode(&connect) {
                         Ok(request) => {
@@ -149,13 +150,24 @@ impl CTcp {
                             return
                         }
                     }
-                    let threadMax = match threadMax.lock() {
-                        Ok(threadMax) => threadMax,
-                        Err(err) => {
-                            println!("{:?}", err);
-                            return;
-                        },
+                    println!("2");
+                    let mut threadMax: Option<usize> = None;
+                    {
+                        let tm = match tm.try_lock() {
+                            Ok(tm) => tm,
+                            Err(err) => {
+                                println!("{:?}", err);
+                                return;
+                            },
+                        };
+                        threadMax = Some(*tm);
+                    }
+                    println!("3");
+                    let threadMax = match threadMax {
+                        Some(max) => max,
+                        None => return,
                     };
+                    println!("4");
                     let dbConnect = Arc::new(Mutex::new(match sqlite3::CSqlite3::connect(&vhost) {
                         Ok(conn) => conn,
                         Err(err) => {
@@ -163,34 +175,84 @@ impl CTcp {
                             return
                         }
                     }));
-                    let connects = match connects.lock() {
-                        Ok(connects) => connects,
-                        Err(_) => return,
-                    };
-                    let connect = match connects.get(&vhost) {
-                        Some(connect) => connect,
-                        None => {
-                            let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
-                            CConnect{
-                                consumers: HashMap::new(),
-                                acks: HashMap::new(),
-                                queueThreadSet: HashSet::new(),
-                                sender: sender,
-                                receiver: receiver
+                    println!("5");
+                    // let connect = {
+                    //     if let Ok(connects) = connects.lock() {
+                    //         if let Some(connect) = connects.get(&vhost) {
+                    //             if let Ok(connect) = connect.lock() {
+                    //                 connect
+                    //             }
+                    //         }
+                    //     }
+                    // };
+                    let mut connect: Option<Arc<Mutex<CConnect>>> = None;
+                    let mut isFindConnect = true;
+                    {
+                        let mut connects = match connects.try_lock() {
+                            Ok(connects) => connects,
+                            Err(_) => {
+                                println!("connects try clone error");
+                                return;
                             }
+                        };
+                        let mut conn = match connects.get_mut(&vhost) {
+                            Some(conn) => conn.clone(),
+                            None => {
+                                isFindConnect = false;
+                                let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
+                                let conn = Arc::new(Mutex::new(CConnect{
+                                    consumers: Arc::new(Mutex::new(HashMap::new())),
+                                    acks: Arc::new(Mutex::new(HashMap::new())),
+                                    queueThreadSet: Arc::new(Mutex::new(HashSet::new())),
+                                    sender: Arc::new(Mutex::new(sender)),
+                                    receiver: Arc::new(Mutex::new(receiver))
+                                }));
+                                connects.insert(vhost.to_string(), conn.clone());
+                                conn
+                            },
+                        };
+                        // let conn = match conn.lock() {
+                        //     Ok(conn) => conn,
+                        //     Err(_) => {
+                        //         println!("connect try clone error");
+                        //         return;
+                        //     }
+                        // };
+                        connect = Some(conn.clone());
+                    }
+                    println!("6");
+                    // let consumers = Arc::new(Mutex::new(connect.consumers));
+                    let connect = match connect {
+                        Some(connect) => connect,
+                        None => return,
+                    };
+                    println!("7");
+                    let connect = match connect.try_lock() {
+                        Ok(connect) => connect,
+                        Err(_) => {
+                            println!("connect try clone error");
+                            return;
                         },
                     };
-                    let consumers = Arc::new(Mutex::new(connect.consumers));
-                    let acks = Arc::new(Mutex::new(connect.acks));
-                    let queueThreadSet = Arc::new(Mutex::new(connect.queueThreadSet));
-                    let sender = Arc::new(Mutex::new(connect.sender));
-                    let receiver = Arc::new(Mutex::new(connect.receiver));
-                    CTcp::dispatch(
-                        consumers.clone(),
-                        acks.clone(),
-                        queueThreadSet.clone(),
-                        *threadMax,
-                        receiver.clone());
+                    println!("8");
+                    // let acks = Arc::new(Mutex::new(connect.acks));
+                    // let queueThreadSet = Arc::new(Mutex::new(connect.queueThreadSet));
+                    // let sender = Arc::new(Mutex::new(connect.sender));
+                    // let receiver = Arc::new(Mutex::new(connect.receiver));
+                    let consumers = connect.consumers.clone();
+                    let acks = connect.acks.clone();
+                    let queueThreadSet = connect.queueThreadSet.clone();
+                    let sender = connect.sender.clone();
+                    let receiver = connect.receiver.clone();
+                    if isFindConnect == false {
+                        println!("not found connect, vhost = {}", &vhost);
+                        CTcp::dispatch(
+                            consumers.clone(),
+                            acks.clone(),
+                            queueThreadSet.clone(),
+                            threadMax,
+                            receiver.clone());
+                    }
                     for line in reader.lines() {
                         let line = match line {
                             Ok(line) => line,
@@ -552,9 +614,32 @@ impl CTcp {
         set.remove(queueName);
     }
 
-    fn findConnect(connects: Arc<Mutex<HashMap<String, CConnect>>>, vhost: &str) -> Option<CConnect> {
-        return None
-    }
+    // fn findConnect(connects: Arc<Mutex<HashMap<String, Arc<Mutex<CConnect>>>>>, vhost: &str) -> Arc<Mutex<CConnect>> {
+    //     let connects = match connects.lock() {
+    //         Ok(connects) => connects,
+    //         Err(_) => {
+    //             return;
+    //         }
+    //     };
+    //     let connect = match connects.get(&vhost) {
+    //         Some(connect) => connect.clone(),
+    //         None => {
+    //             let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
+    //             Arc::new(Mutex::new(CConnect{
+    //                 consumers: Arc::new(Mutex::new(HashMap::new())),
+    //                 acks: Arc::new(Mutex::new(HashMap::new())),
+    //                 queueThreadSet: Arc::new(Mutex::new(HashSet::new())),
+    //                 sender: Arc::new(Mutex::new(sender)),
+    //                 receiver: Arc::new(Mutex::new(receiver))
+    //             }))
+    //         },
+    //     };
+    //     let connect = match connect.lock() {
+    //         Ok(connect) => connect,
+    //         Err(_) => return,
+    //     };
+    //     connect
+    // }
 }
 
 impl CTcp {
