@@ -48,7 +48,6 @@ impl CThreadPool {
                 let t = th.clone();
                 thread::spawn(move || {
                     loop {
-                        println!("create thread");
                         let t = match t.lock() {
                             Ok(t) => t,
                             Err(_) => return,
@@ -57,10 +56,7 @@ impl CThreadPool {
                             Ok(recv) => recv,
                             Err(_) => return,
                         };
-                        println!("call callback");
-                        thread::spawn(|| {
-                            recv.call(&obj);
-                        });
+                        recv.call(&obj);
                     }
                 });
             }
