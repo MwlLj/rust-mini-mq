@@ -24,6 +24,7 @@ const requestModeConsumer: &str = "consumer";
 
 const responseModeResult: &str = "result";
 const responseModeData: &str = "data";
+const responseModeConnect: &str = "connect";
 
 const argServer: &str = "-server";
 const argServerName: &str = "-server-name";
@@ -84,6 +85,30 @@ impl CTcp {
         }
         if let Err(err) = writer.flush() {
             return Err("flush error");
+        }
+        // recv connect response
+        let reader = BufReader::new(&self.stream);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => {
+                    println!("line match error");
+                    return Err("connect disconnect");
+                }
+            };
+            match json::decode(&line) {
+                Ok(res) => {
+                    let response: CResponse = res;
+                    if response.mode == responseModeConnect {
+                        println!("recv connect response");
+                        break
+                    }
+                },
+                Err(err) => {
+                    println!("decode connect response error");
+                    return Err("decode connect response error");
+                }
+            }
         }
         Ok(())
     }
