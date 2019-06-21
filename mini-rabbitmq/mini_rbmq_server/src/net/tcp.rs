@@ -19,6 +19,9 @@ use std::sync::Arc;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::io::prelude::*;
+use std::path::Path;
+use std::path::PathBuf;
+use std::fs::DirBuilder;
 
 use rustc_serialize::json;
 
@@ -104,12 +107,15 @@ pub struct CChannelData {
 }
 
 impl CTcp {
-    pub fn start(self, addr: &str) {
+    pub fn start(self, addr: &str, storageRoot: String) {
+        CTcp::createDir(&storageRoot);
         let listener = TcpListener::bind(addr).unwrap();
         let connects = Arc::new(Mutex::new(self.connects));
         let threadMax = Arc::new(Mutex::new(self.threadMax));
+        let storageRoot = Arc::new(Mutex::new(storageRoot));
         for stream in listener.incoming() {
             let connects = connects.clone();
+            let storageRoot = storageRoot.clone();
             let tm = threadMax.clone();
             thread::spawn(move || {
                 let connUuid = Uuid::new_v4();
@@ -153,7 +159,22 @@ impl CTcp {
                         Some(max) => max,
                         None => return,
                     };
-                    let dbConnect = Arc::new(Mutex::new(match sqlite3::CSqlite3::connect(&vhost) {
+                    let mut root: Option<String> = None;
+                    {
+                        let rt = match storageRoot.try_lock() {
+                            Ok(rt) => rt,
+                            Err(err) => {
+                                println!("{:?}", err);
+                                return;
+                            },
+                        };
+                        root = Some(rt.clone());
+                    }
+                    let root = match root {
+                        Some(root) => root,
+                        None => return,
+                    };
+                    let dbConnect = Arc::new(Mutex::new(match sqlite3::CSqlite3::connect(&CTcp::joinStoragePath(&root, &vhost)) {
                         Ok(conn) => conn,
                         Err(err) => {
                             println!("{:?}", err);
@@ -522,8 +543,25 @@ impl CTcp {
         }
     }
 
+    fn createDir(root: &str) {
+        let full = Path::new(root);
+        if full.exists() {
+            return;
+        }
+        if let Ok(_) = DirBuilder::new().recursive(true).create(&full) {
+            return;
+        }
+    }
+
     fn joinLineFeed(content: &str) -> String {
         return vec![content, "\n"].join("");
+    }
+
+    fn joinStoragePath(storageRoot: &str, path: &str) -> String {
+        let mut root = String::from(storageRoot);
+        root.push_str("/");
+        root.push_str(path);
+        root
     }
 
     fn removeConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, connUuid: &str) {

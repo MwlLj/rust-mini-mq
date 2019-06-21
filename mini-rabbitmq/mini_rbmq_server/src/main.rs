@@ -1,67 +1,47 @@
 extern crate mini_rbmq_server;
 
-use mini_rbmq_server::storage::{IStorage, sqlite3};
-use mini_rbmq_server::consts::exchange;
-use mini_rbmq_server::consts::queue;
 use mini_rbmq_server::net::tcp;
+use rust_parse::cmd::CCmd;
 
-fn dbTest() {
-    let s = &sqlite3::CSqlite3::connect("test");
-    let s = match s {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    println!("connect success");
-    if let Err(_) = s.createExchange("test_change", exchange::exchangeTypeDirect) {
-        return;
-    }
-    println!("create exchange success");
-    {
-        if let Err(_) = s.createQueue("test_queue1", queue::queueTypeDirect) {
-            return;
-        }
-        println!("create queue1 success");
+const argServerHost: &str = "-host";
+const argServerPort: &str = "-port";
+const argStorageRoot: &str = "-storage-root";
+const argThreadMax: &str = "-thread-max";
 
-        if let Err(_) = s.createQueue("test_queue2", queue::queueTypeDirect) {
-            return;
-        }
-        println!("create queue2 success");
-    }
-    {
-        if let Err(_) = s.createBind("test_change", "test_queue1", "test_key") {
-            return;
-        }
-        println!("create bind 1 success");
-
-        if let Err(_) = s.createBind("test_change", "test_queue2", "test_key") {
-            return;
-        }
-        println!("create bind 2 success");
-    }
-    if let Err(_) = s.addData("test_change", "test_key", "test data") {
-        return;
-    }
-    println!("add data success");
-    while let Some(data) = s.getOneData("test_queue2", |queueType: &str, data: &str| -> bool {
-        return true;
-    }) {
-        println!("{:?}", &data);
-    }
-    let mut buffer = vec![0 as u8; 100];
-    buffer[0] = 65;
-    buffer[1] = 66;
-    buffer[2] = 67;
-    buffer[3] = 68;
-    println!("{:?}", &String::from_utf8(buffer[..4].to_vec()));
-    println!("{:?}", &buffer[5..]);
-}
-
-fn tcpTest() {
-    let conn = tcp::CTcp::new(10);
-    conn.start("0.0.0.0:60000");
+fn printHelp() {
+    let mut message = String::new();
+    message.push_str("options: \n");
+    message.push_str("\t-host: server listen ip, exp: 0.0.0.0\n");
+    message.push_str("\t-port: server listen port, exp: 60000\n");
+    message.push_str("\t-storage-root: storage root, exp: mini_rbmq");
+    message.push_str("\t-thread-max: thread max number, exp: 10\n");
+    print!("{}", message);
 }
 
 fn main() {
-    // dbTest();
-    tcpTest();
+    printHelp();
+
+    let mut cmdHandler = CCmd::new();
+    let host = cmdHandler.register(argServerHost, "0.0.0.0");
+    let port = cmdHandler.register(argServerPort, "60000");
+    let storageRoot = cmdHandler.register(argStorageRoot, "mini_rbmq");
+    let threadMax = cmdHandler.register(argThreadMax, "10");
+    cmdHandler.parse();
+
+    let host = host.borrow();
+    let port = port.borrow();
+    let threadMax = threadMax.borrow();
+    let storageRoot = storageRoot.borrow();
+
+    let mut server = String::new();
+    server.push_str(&(*host));
+    server.push_str(":");
+    server.push_str(&(*port));
+
+    if let Ok(threadMax) = threadMax.trim().parse() {
+        let conn = tcp::CTcp::new(threadMax);
+        conn.start(&server, storageRoot.to_string());
+    } else {
+        println!("threadMax must be number!!!");
+    }
 }
