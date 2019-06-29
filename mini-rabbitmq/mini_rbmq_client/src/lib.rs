@@ -1,5 +1,6 @@
 pub mod net;
 pub mod consts;
+pub mod decode;
 
 #[cfg(test)]
 mod tests {

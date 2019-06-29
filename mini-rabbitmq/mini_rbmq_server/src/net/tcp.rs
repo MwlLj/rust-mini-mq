@@ -30,6 +30,7 @@ use rand::Rng;
 use rust_pool::thread::simple::CThreadPool;
 use super::super::storage::sqlite3;
 use super::super::consts;
+use super::super::decode;
 
 use uuid::Uuid;
 
@@ -50,8 +51,38 @@ const ackResultFailed: u32 = 1;
 const ackResultTrue: u32 = 2;
 const ackResultFalse: u32 = 3;
 
+macro_rules! decode_request {
+    ($index:ident, $s:ident, $req:ident) => ({
+        if $index % 2 == 0 {
+            let two: u32 = 2;
+            let mut number = 0;
+            let mut i = 0;
+            for item in $s {
+                // println!("{}, {}, {}", item, i, two.pow(i));
+                number += item as u32 * two.pow(i);
+                i += 1;
+            }
+            return (true, number);
+        }
+        if $index == 1 {$req.mode = String::from_utf8($s).unwrap()}
+        else if $index == 3 {$req.identify = String::from_utf8($s).unwrap()}
+        else if $index == 5 {$req.vhost = String::from_utf8($s).unwrap()}
+        else if $index == 7 {$req.exchangeName = String::from_utf8($s).unwrap()}
+        else if $index == 9 {$req.exchangeType = String::from_utf8($s).unwrap()}
+        else if $index == 11 {$req.queueName = String::from_utf8($s).unwrap()}
+        else if $index == 13 {$req.queueType = String::from_utf8($s).unwrap()}
+        else if $index == 15 {$req.routerKey = String::from_utf8($s).unwrap()}
+        else if $index == 17 {$req.data = String::from_utf8($s).unwrap()}
+        else if $index == 19 {$req.ackResult = String::from_utf8($s).unwrap()}
+        if $index == 19 {
+            return (false, 0);
+        }
+        return (true, 32);
+    })
+}
+
 // #[derive(Serialize, Deserialize)]
-#[derive(RustcDecodable, RustcEncodable)]
+#[derive(RustcDecodable, RustcEncodable, Default)]
 pub struct CRequest {
     mode: String,
     identify: String,
@@ -68,7 +99,6 @@ pub struct CRequest {
 #[derive(RustcDecodable, RustcEncodable)]
 pub struct CResponse {
     mode: String,
-    queueName: String,
     data: String,
     error: u32,
     errorString: String
@@ -120,6 +150,17 @@ impl CTcp {
             thread::spawn(move || {
                 let connUuid = Uuid::new_v4();
                 if let Ok(stream) = stream {
+                    let mut vhost = String::new();
+                    {
+                        let mut request = CRequest::default();
+                        let mut r = decode::stream::CStreamBlockParse::new(stream.try_clone().unwrap());
+                        r.line(32, &mut request, &mut |index: u64, buf: Vec<u8>, req: &mut CRequest| -> (bool, u32) {
+                            decode_request!(index, buf, req);
+                        });
+                        vhost = request.vhost;
+                    }
+                    println!("vhost: {}", &vhost);
+                    /*
                     let mut reader = BufReader::new(&stream);
                     // connect
                     let mut connect = String::new();
@@ -144,6 +185,7 @@ impl CTcp {
                             return
                         }
                     }
+                    */
                     let mut threadMax: Option<usize> = None;
                     {
                         let tm = match tm.try_lock() {
@@ -235,9 +277,20 @@ impl CTcp {
                             receiver.clone());
                     }
                     thread::spawn(move || {
+                        println!("send connect response");
                         // response connect success
                         {
                             let mut writer = BufWriter::new(&stream);
+                            let res = CResponse{
+                                mode: responseModeConnect.to_string(),
+                                data: "".to_string(),
+                                error: consts::result::resultOkError,
+                                errorString: consts::result::resultOkErrorString.to_string()
+                            };
+                            if !CTcp::sendResponse(stream.try_clone().unwrap(), res) {
+                                return;
+                            };
+                            /*
                             let res = CResponse{
                                 mode: responseModeConnect.to_string(),
                                 queueName: "".to_string(),
@@ -255,7 +308,152 @@ impl CTcp {
                             if let Err(err) = writer.flush() {
                                 return;
                             };
+                            */
                         }
+                        let mut req = CRequest::default();
+                        let mut r = decode::stream::CStreamBlockParse::new(stream.try_clone().unwrap());
+                        r.lines(32, &mut req, &mut |index: u64, buf: Vec<u8>, request: &mut CRequest| -> (bool, u32) {
+                            decode_request!(index, buf, request);
+                        }, |request: &CRequest| -> bool {
+                            let mut error: u32 = consts::result::resultOkError;
+                            let mut errorString: String = consts::result::resultOkErrorString.to_string();
+                            loop {
+                                if request.mode == requestModeCreateExchange {
+                                    // create exchange
+                                    let dbConn = match dbConnect.lock() {
+                                        Ok(dbConn) => dbConn,
+                                        Err(_) => break
+                                    };
+                                    if let Err(_) = dbConn.createExchange(&request.exchangeName, &request.exchangeType) {
+                                        break;
+                                    }
+                                } else if request.mode == requestModeCreateQueue {
+                                    // create queue
+                                    let dbConn = match dbConnect.lock() {
+                                        Ok(dbConn) => dbConn,
+                                        Err(_) => break
+                                    };
+                                    if let Err(_) = dbConn.createQueue(&request.queueName, &request.queueType) {
+                                        break;
+                                    }
+                                } else if request.mode == requestModeCreateBind {
+                                    // create bind
+                                    let dbConn = match dbConnect.lock() {
+                                        Ok(dbConn) => dbConn,
+                                        Err(_) => break
+                                    };
+                                    if let Err(_) = dbConn.createBind(&request.exchangeName, &request.queueName, &request.routerKey) {
+                                        break;
+                                    }
+                                } else if request.mode == requestModePublish {
+                                    // create bind
+                                    let dbConn = match dbConnect.lock() {
+                                        Ok(dbConn) => dbConn,
+                                        Err(_) => break
+                                    };
+                                    if let Ok(queues) = dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
+                                        for queue in queues {
+                                            CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &queue);
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                } else if request.mode == requestModeConsumer {
+                                    // consumer
+                                    {
+                                        let mut consumes = match consumers.lock() {
+                                            Ok(consumes) => consumes,
+                                            Err(_) => break
+                                        };
+                                        let mut acks = match acks.lock() {
+                                            Ok(acks) => acks,
+                                            Err(_) => break,
+                                        };
+                                        let stream = match stream.try_clone() {
+                                            Ok(stream) => stream,
+                                            Err(_) => break
+                                        };
+                                        let (s, r) = mpsc::channel();
+                                        let cons = CConsumerInfo{
+                                            stream: stream,
+                                            connUuid: connUuid.to_string(),
+                                            ackReceiver: r
+                                        };
+                                        match consumes.get_mut(&request.queueName) {
+                                            Some(value) => {
+                                                (*value).push(cons);
+                                            },
+                                            None => {
+                                                let mut v = Vec::new();
+                                                v.push(cons);
+                                                consumes.insert(request.queueName.to_string(), v);
+                                            },
+                                        };
+                                        match acks.get_mut(&connUuid.to_string()) {
+                                            Some(value) => {
+                                                (*value).ackSender = s;
+                                            },
+                                            None => {
+                                                acks.insert(connUuid.to_string(), CAckSender{
+                                                    ackSender: s,
+                                                });
+                                            },
+                                        };
+                                    }
+                                    CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
+                                } else if request.mode == requestModeAck {
+                                    // ack
+                                    let mut acks = match acks.try_lock() {
+                                        Ok(acks) => acks,
+                                        Err(_) => {
+                                            println!("try lock error");
+                                            break;
+                                        }
+                                    };
+                                    if let Some(send) = acks.get(&connUuid.to_string()) {
+                                        if let Err(err) = send.ackSender.send(CAckInfo{
+                                            ackResult: request.ackResult.to_string(),
+                                        }) {
+                                            println!("ackSender send error: {}", err);
+                                        }
+                                    }
+                                }
+                                break
+                            }
+                            let res = CResponse{
+                                mode: responseModeResult.to_string(),
+                                data: "".to_string(),
+                                error: error,
+                                errorString: errorString,
+                            };
+                            if !CTcp::sendResponse(stream.try_clone().unwrap(), res) {
+                                return false;
+                            };
+                            /*
+                            let encode = match json::encode(&res) {
+                                Ok(encode) => encode,
+                                Err(_) => continue,
+                            };
+                            let mut writer = BufWriter::new(&stream);
+                            if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encode).as_bytes()) {
+                                println!("send response write all error");
+                                // CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
+                                break;
+                            };
+                            if let Err(err) = writer.flush() {
+                                println!("send response flush error, {}", err);
+                                // CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
+                                break;
+                            };
+                            */
+                            return true;
+                        });
+                        {
+                            // disconnect handle
+                            println!("remove consumer");
+                            CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
+                        }
+                        /*
                         let mut reader = BufReader::new(&stream);
                         for line in reader.lines() {
                             let line = match line {
@@ -382,6 +580,10 @@ impl CTcp {
                                 error: error,
                                 errorString: errorString,
                             };
+                            if !CTcp::sendResponse(stream.try_clone().unwrap(), res) {
+                                break;
+                            };
+                            /*
                             let encode = match json::encode(&res) {
                                 Ok(encode) => encode,
                                 Err(_) => continue,
@@ -397,12 +599,14 @@ impl CTcp {
                                 // CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                                 break;
                             };
+                            */
                         }
                         {
                             // disconnect handle
                             println!("remove consumer");
                             CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                         }
+                        */
                     });
                 }
             });
@@ -504,6 +708,32 @@ impl CTcp {
     }
 
     fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, consumer: &CConsumerInfo, queueName: &str, data: &str) -> u32 {
+        let response = CResponse{
+            mode: responseModeData.to_string(),
+            data: data.to_string(),
+            error: consts::result::resultOkError,
+            errorString: consts::result::resultOkErrorString.to_string()
+        };
+        println!("send data");
+        if !CTcp::sendResponse(consumer.stream.try_clone().unwrap(), response) {
+            println!("send data error");
+            // CTcp::removeConsumer(Arc::clone(&consumers), acks.clone(), &consumer.connUuid);
+            return ackResultFailed;
+        };
+        let recv = match consumer.ackReceiver.recv() {
+            Ok(recv) => recv,
+            Err(err) => {
+                println!("{}", err);
+                return ackResultFailed;
+            }
+        };
+        if recv.ackResult == consts::define::ackTrue {
+            return ackResultTrue;
+        }
+        else {
+            return ackResultFalse;
+        }
+        /*
         // let consumer = match consumer.lock() {
         //     Ok(consumer) => consumer,
         //     Err(_) => return,
@@ -541,6 +771,35 @@ impl CTcp {
         else {
             return ackResultFalse;
         }
+        */
+    }
+
+    fn append32Number(value: u32, buf: &mut Vec<u8>) {
+        for i in 0..32 {
+            let b = (value >> i) & 1;
+            buf.push(b as u8);
+        }
+    }
+
+    fn sendResponse(stream: TcpStream, response: CResponse) -> bool {
+        let mut writer = BufWriter::new(&stream);
+        let mut buf = Vec::new();
+        CTcp::append32Number(response.mode.len() as u32, &mut buf);
+        buf.append(&mut response.mode.as_bytes().to_vec());
+        CTcp::append32Number(response.data.len() as u32, &mut buf);
+        buf.append(&mut response.data.as_bytes().to_vec());
+        let errorStr = response.error.to_string();
+        CTcp::append32Number(errorStr.len() as u32, &mut buf);
+        buf.append(&mut errorStr.as_bytes().to_vec());
+        CTcp::append32Number(response.errorString.len() as u32, &mut buf);
+        buf.append(&mut response.errorString.as_bytes().to_vec());
+        if let Err(err) = writer.write_all(&buf) {
+            return false;
+        };
+        if let Err(err) = writer.flush() {
+            return false;
+        };
+        true
     }
 
     fn createDir(root: &str) {

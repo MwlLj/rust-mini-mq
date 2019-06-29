@@ -20,7 +20,7 @@ fn printHelp() {
 
 fn main() {
     printHelp();
-
+    
     let mut cmdHandler = CCmd::new();
     let host = cmdHandler.register(argServerHost, "0.0.0.0");
     let port = cmdHandler.register(argServerPort, "60000");

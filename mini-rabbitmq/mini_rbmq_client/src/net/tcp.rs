@@ -14,6 +14,7 @@ use rust_parse::cmd::CCmd;
 
 use super::super::consts;
 use super::tcp_ack;
+use super::super::decode;
 
 const requestModeConnect: &str = "connect";
 const requestModeCreateExchange: &str = "create-exchange";
@@ -49,7 +50,7 @@ pub struct CRequest {
     ackResult: String
 }
 
-#[derive(RustcDecodable, RustcEncodable)]
+#[derive(RustcDecodable, RustcEncodable, Default)]
 pub struct CResponse {
     mode: String,
     data: String,
@@ -59,6 +60,43 @@ pub struct CResponse {
 
 pub struct CTcp {
     stream: TcpStream
+}
+
+macro_rules! vec_to_number {
+    ($v:ident) => ({
+        let two: u32 = 2;
+        let mut number = 0;
+        let mut i = 0;
+        for item in $v {
+            number += item as u32 * two.pow(i);
+            i += 1;
+        }
+        number
+    })
+}
+
+macro_rules! decode_response {
+    ($index:ident, $s:ident, $req:ident) => ({
+        if $index % 2 == 0 {
+            let two: u32 = 2;
+            let mut number = 0;
+            let mut i = 0;
+            for item in $s {
+                // println!("{}, {}, {}", item, i, two.pow(i));
+                number += item as u32 * two.pow(i);
+                i += 1;
+            }
+            return (true, number);
+        }
+        if $index == 1 {$req.mode = String::from_utf8($s).unwrap()}
+        else if $index == 3 {$req.data = String::from_utf8($s).unwrap()}
+        else if $index == 5 {$req.error = vec_to_number!($s)}
+        else if $index == 7 {$req.errorString = String::from_utf8($s).unwrap()}
+        if $index == 7 {
+            return (false, 0);
+        }
+        return (true, 32);
+    })
 }
 
 impl CTcp {
@@ -76,6 +114,20 @@ impl CTcp {
             data: "".to_string(),
             ackResult: "".to_string()
         };
+        if let Err(err) = self.sendRequest(connRequest) {
+            return Err("send eror");
+        };
+        let mut response = CResponse::default();
+        let mut r = decode::stream::CStreamBlockParse::new(self.stream.try_clone().unwrap());
+        r.lines(32, &mut response, &mut |index: u64, buf: Vec<u8>, res: &mut CResponse| -> (bool, u32) {
+            decode_response!(index, buf, res);
+        }, |res: &CResponse| -> bool {
+            if res.mode == responseModeConnect {
+                return false;
+            }
+            return true;
+        });
+        /*
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
@@ -110,6 +162,7 @@ impl CTcp {
                 }
             }
         }
+        */
         Ok(())
     }
 
@@ -127,6 +180,10 @@ impl CTcp {
             data: "".to_string(),
             ackResult: "".to_string()
         };
+        if let Err(err) = self.sendRequest(connRequest) {
+            return Err("send eror");
+        };
+        /*
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
@@ -139,6 +196,7 @@ impl CTcp {
             println!("create exchange write error");
             return Err("flush error");
         }
+        */
         Ok(())
     }
 
@@ -156,6 +214,10 @@ impl CTcp {
             data: "".to_string(),
             ackResult: "".to_string()
         };
+        if let Err(err) = self.sendRequest(connRequest) {
+            return Err("send eror");
+        };
+        /*
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
@@ -168,6 +230,7 @@ impl CTcp {
             println!("create queue flush error");
             return Err("flush error");
         }
+        */
         Ok(())
     }
 
@@ -185,6 +248,10 @@ impl CTcp {
             data: "".to_string(),
             ackResult: "".to_string()
         };
+        if let Err(err) = self.sendRequest(connRequest) {
+            return Err("send eror");
+        };
+        /*
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
@@ -197,6 +264,7 @@ impl CTcp {
             println!("create bind write error");
             return Err("flush error");
         }
+        */
         Ok(())
     }
 
@@ -214,6 +282,10 @@ impl CTcp {
             data: data.to_string(),
             ackResult: "".to_string()
         };
+        if let Err(err) = self.sendRequest(connRequest) {
+            return Err("send eror");
+        };
+        /*
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
@@ -226,6 +298,7 @@ impl CTcp {
             println!("publish flush error");
             return Err("flush error");
         }
+        */
         Ok(())
     }
 
@@ -243,6 +316,10 @@ impl CTcp {
             data: "".to_string(),
             ackResult: "".to_string()
         };
+        if let Err(err) = self.sendRequest(connRequest) {
+            return Err("send eror");
+        };
+        /*
         let encoded = match json::encode(&connRequest) {
             Ok(encoded) => encoded,
             Err(_) => return Err("json encode error")
@@ -253,6 +330,7 @@ impl CTcp {
         if let Err(err) = writer.flush() {
             return Err("flush error");
         }
+        */
         Ok(())
     }
 
@@ -261,6 +339,29 @@ impl CTcp {
         let mut reader = BufReader::new(&self.stream);
         let mut writer = BufWriter::new(&self.stream);
         let cb = Arc::new(Mutex::new(callback));
+        let mut response = CResponse::default();
+        let mut r = decode::stream::CStreamBlockParse::new(self.stream.try_clone().unwrap());
+        r.lines(32, &mut response, &mut |index: u64, buf: Vec<u8>, res: &mut CResponse| -> (bool, u32) {
+            decode_response!(index, buf, res);
+        }, |res: &CResponse| -> bool {
+            let cb = cb.clone();
+            let cb = match cb.lock() {
+                Ok(cb) => cb,
+                Err(_) => return false
+            };
+            if res.mode == responseModeData {
+                let stream = match self.stream.try_clone() {
+                    Ok(stream) => stream,
+                    Err(_) => {
+                        println!("stream clone error");
+                        return false;
+                    }
+                };
+                cb(&tcp_ack::CAck::new(stream), &res.data);
+            }
+            return true;
+        });
+        /*
         for line in reader.lines() {
             let cb = cb.clone();
             let cb = match cb.lock() {
@@ -291,6 +392,7 @@ impl CTcp {
                 }
             }
         }
+        */
         Ok(())
     }
 
@@ -322,6 +424,45 @@ impl CTcp {
 impl CTcp {
     fn joinLineFeed(content: &str) -> String {
         return vec![content, "\n"].join("");
+    }
+
+    fn append32Number(&self, value: u32, buf: &mut Vec<u8>) {
+        for i in 0..32 {
+            let b = (value >> i) & 1;
+            buf.push(b as u8);
+        }
+    }
+
+    fn sendRequest(&self, request: CRequest) -> Result<(), &str> {
+        let mut writer = BufWriter::new(&self.stream);
+        let mut buf = Vec::new();
+        self.append32Number(request.mode.len() as u32, &mut buf);
+        buf.append(&mut request.mode.as_bytes().to_vec());
+        self.append32Number(request.identify.len() as u32, &mut buf);
+        buf.append(&mut request.identify.as_bytes().to_vec());
+        self.append32Number(request.vhost.len() as u32, &mut buf);
+        buf.append(&mut request.vhost.as_bytes().to_vec());
+        self.append32Number(request.exchangeName.len() as u32, &mut buf);
+        buf.append(&mut request.exchangeName.as_bytes().to_vec());
+        self.append32Number(request.exchangeType.len() as u32, &mut buf);
+        buf.append(&mut request.exchangeType.as_bytes().to_vec());
+        self.append32Number(request.queueName.len() as u32, &mut buf);
+        buf.append(&mut request.queueName.as_bytes().to_vec());
+        self.append32Number(request.queueType.len() as u32, &mut buf);
+        buf.append(&mut request.queueType.as_bytes().to_vec());
+        self.append32Number(request.routerKey.len() as u32, &mut buf);
+        buf.append(&mut request.routerKey.as_bytes().to_vec());
+        self.append32Number(request.data.len() as u32, &mut buf);
+        buf.append(&mut request.data.as_bytes().to_vec());
+        self.append32Number(request.ackResult.len() as u32, &mut buf);
+        buf.append(&mut request.ackResult.as_bytes().to_vec());
+        if let Err(err) = writer.write_all(&buf) {
+            return Err("write error");
+        };
+        if let Err(err) = writer.flush() {
+            return Err("flush error");
+        };
+        Ok(())
     }
 }
 
