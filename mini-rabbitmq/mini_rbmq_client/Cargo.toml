@@ -7,3 +7,4 @@ edition = "2018"
 [dependencies]
 rustc-serialize = "*"
 rust_parse = { git = "https://github.com/MwlLj/rust_parse" }
+uuid = { version = "0.7", default-features = false, features = ["serde", "v4"] }

@@ -125,6 +125,18 @@ impl CSqlite3 {
         Ok(())
     }
 
+    pub fn deleteQueue(&self, queueName: &str) -> sqlite3::Result<()> {
+        let sql = format!(
+            "
+            delete from {};
+            "
+        , queueName);
+        if let Ok(ref conn) = self.connect {
+            conn.execute(sql)?
+        }
+        Ok(())
+    }
+
     pub fn addData(&self, exchangeName: &str, routerKey: &str, data: &str) -> Result<Vec<String>, &str> {
         let mut infos = self.getBindInfoByExchangeRouterKey(exchangeName, routerKey);
         let length = infos.len();

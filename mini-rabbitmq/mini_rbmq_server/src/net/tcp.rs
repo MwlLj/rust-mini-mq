@@ -38,6 +38,7 @@ const requestModeConnect: &str = "connect";
 const requestModeCreateExchange: &str = "create-exchange";
 const requestModeCreateQueue: &str = "create-queue";
 const requestModeCreateBind: &str = "create-bind";
+const requestModeClearQueue: &str = "clear-queue";
 const requestModePublish: &str = "publish";
 const requestModeConsumer: &str = "consumer";
 const requestModeAck: &str = "ack";
@@ -74,7 +75,8 @@ macro_rules! decode_request {
         else if $index == 15 {$req.routerKey = String::from_utf8($s).unwrap()}
         else if $index == 17 {$req.data = String::from_utf8($s).unwrap()}
         else if $index == 19 {$req.ackResult = String::from_utf8($s).unwrap()}
-        if $index == 19 {
+        else if $index == 21 {$req.messageNo = String::from_utf8($s).unwrap()}
+        if $index == 21 {
             return (false, 0);
         }
         return (true, 32);
@@ -93,13 +95,15 @@ pub struct CRequest {
     queueType: String,
     routerKey: String,
     data: String,
-    ackResult: String
+    ackResult: String,
+    messageNo: String
 }
 
 #[derive(RustcDecodable, RustcEncodable)]
 pub struct CResponse {
     mode: String,
     data: String,
+    messageNo: String,
     error: u32,
     errorString: String
 }
@@ -160,32 +164,6 @@ impl CTcp {
                         vhost = request.vhost;
                     }
                     println!("vhost: {}", &vhost);
-                    /*
-                    let mut reader = BufReader::new(&stream);
-                    // connect
-                    let mut connect = String::new();
-                    match reader.read_line(&mut connect) {
-                        Ok(size) => {},
-                        Err(err) => {
-                            println!("{:?}", err);
-                            return
-                        }
-                    }
-                    let mut vhost = String::new();
-                    match json::decode(&connect) {
-                        Ok(request) => {
-                            let request: CRequest = request;
-                            if request.mode != requestModeConnect {
-                                return;
-                            }
-                            vhost = request.vhost;
-                        },
-                        Err(err) => {
-                            println!("{:?}", err);
-                            return
-                        }
-                    }
-                    */
                     let mut threadMax: Option<usize> = None;
                     {
                         let tm = match tm.try_lock() {
@@ -284,31 +262,13 @@ impl CTcp {
                             let res = CResponse{
                                 mode: responseModeConnect.to_string(),
                                 data: "".to_string(),
+                                messageNo: "".to_string(),
                                 error: consts::result::resultOkError,
                                 errorString: consts::result::resultOkErrorString.to_string()
                             };
                             if !CTcp::sendResponse(stream.try_clone().unwrap(), res) {
                                 return;
                             };
-                            /*
-                            let res = CResponse{
-                                mode: responseModeConnect.to_string(),
-                                queueName: "".to_string(),
-                                data: "".to_string(),
-                                error: 0,
-                                errorString: "".to_string(),
-                            };
-                            let encode = match json::encode(&res) {
-                                Ok(encode) => encode,
-                                Err(_) => return,
-                            };
-                            if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encode).as_bytes()) {
-                                return;
-                            };
-                            if let Err(err) = writer.flush() {
-                                return;
-                            };
-                            */
                         }
                         let mut req = CRequest::default();
                         let mut r = decode::stream::CStreamBlockParse::new(stream.try_clone().unwrap());
@@ -322,40 +282,78 @@ impl CTcp {
                                     // create exchange
                                     let dbConn = match dbConnect.lock() {
                                         Ok(dbConn) => dbConn,
-                                        Err(_) => break
+                                        Err(_) => {
+                                            error = consts::code::lock_error;
+                                            errorString = consts::code::error_string(error);
+                                            break;
+                                        }
                                     };
                                     if let Err(_) = dbConn.createExchange(&request.exchangeName, &request.exchangeType) {
+                                        error = consts::code::db_error;
+                                        errorString = consts::code::error_string(error);
                                         break;
                                     }
                                 } else if request.mode == requestModeCreateQueue {
                                     // create queue
                                     let dbConn = match dbConnect.lock() {
                                         Ok(dbConn) => dbConn,
-                                        Err(_) => break
+                                        Err(_) => {
+                                            error = consts::code::lock_error;
+                                            errorString = consts::code::error_string(error);
+                                            break;
+                                        }
                                     };
                                     if let Err(_) = dbConn.createQueue(&request.queueName, &request.queueType) {
+                                        error = consts::code::db_error;
+                                        errorString = consts::code::error_string(error);
+                                        break;
+                                    }
+                                } else if request.mode == requestModeClearQueue {
+                                    let dbConn = match dbConnect.lock() {
+                                        Ok(dbConn) => dbConn,
+                                        Err(_) => {
+                                            error = consts::code::lock_error;
+                                            errorString = consts::code::error_string(error);
+                                            break;
+                                        }
+                                    };
+                                    if let Err(_) = dbConn.deleteQueue(&request.queueName) {
+                                        error = consts::code::db_error;
+                                        errorString = consts::code::error_string(error);
                                         break;
                                     }
                                 } else if request.mode == requestModeCreateBind {
                                     // create bind
                                     let dbConn = match dbConnect.lock() {
                                         Ok(dbConn) => dbConn,
-                                        Err(_) => break
+                                        Err(_) => {
+                                            error = consts::code::lock_error;
+                                            errorString = consts::code::error_string(error);
+                                            break;
+                                        }
                                     };
                                     if let Err(_) = dbConn.createBind(&request.exchangeName, &request.queueName, &request.routerKey) {
+                                        error = consts::code::db_error;
+                                        errorString = consts::code::error_string(error);
                                         break;
                                     }
                                 } else if request.mode == requestModePublish {
                                     // create bind
                                     let dbConn = match dbConnect.lock() {
                                         Ok(dbConn) => dbConn,
-                                        Err(_) => break
+                                        Err(_) => {
+                                            error = consts::code::lock_error;
+                                            errorString = consts::code::error_string(error);
+                                            break;
+                                        }
                                     };
                                     if let Ok(queues) = dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
                                         for queue in queues {
                                             CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &queue);
                                         }
                                     } else {
+                                        error = consts::code::db_error;
+                                        errorString = consts::code::error_string(error);
                                         break;
                                     }
                                 } else if request.mode == requestModeConsumer {
@@ -363,15 +361,27 @@ impl CTcp {
                                     {
                                         let mut consumes = match consumers.lock() {
                                             Ok(consumes) => consumes,
-                                            Err(_) => break
+                                            Err(_) => {
+                                                error = consts::code::lock_error;
+                                                errorString = consts::code::error_string(error);
+                                                break;
+                                            }
                                         };
                                         let mut acks = match acks.lock() {
                                             Ok(acks) => acks,
-                                            Err(_) => break,
+                                            Err(_) => {
+                                                error = consts::code::lock_error;
+                                                errorString = consts::code::error_string(error);
+                                                break;
+                                            }
                                         };
                                         let stream = match stream.try_clone() {
                                             Ok(stream) => stream,
-                                            Err(_) => break
+                                            Err(_) => {
+                                                error = consts::code::lock_error;
+                                                errorString = consts::code::error_string(error);
+                                                break
+                                            }
                                         };
                                         let (s, r) = mpsc::channel();
                                         let cons = CConsumerInfo{
@@ -406,6 +416,8 @@ impl CTcp {
                                     let mut acks = match acks.try_lock() {
                                         Ok(acks) => acks,
                                         Err(_) => {
+                                            error = consts::code::lock_error;
+                                            errorString = consts::code::error_string(error);
                                             println!("try lock error");
                                             break;
                                         }
@@ -414,6 +426,8 @@ impl CTcp {
                                         if let Err(err) = send.ackSender.send(CAckInfo{
                                             ackResult: request.ackResult.to_string(),
                                         }) {
+                                            error = consts::code::send_error;
+                                            errorString = consts::code::error_string(error);
                                             println!("ackSender send error: {}", err);
                                         }
                                     }
@@ -423,29 +437,13 @@ impl CTcp {
                             let res = CResponse{
                                 mode: responseModeResult.to_string(),
                                 data: "".to_string(),
+                                messageNo: request.messageNo.clone(),
                                 error: error,
                                 errorString: errorString,
                             };
                             if !CTcp::sendResponse(stream.try_clone().unwrap(), res) {
                                 return false;
                             };
-                            /*
-                            let encode = match json::encode(&res) {
-                                Ok(encode) => encode,
-                                Err(_) => continue,
-                            };
-                            let mut writer = BufWriter::new(&stream);
-                            if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encode).as_bytes()) {
-                                println!("send response write all error");
-                                // CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
-                                break;
-                            };
-                            if let Err(err) = writer.flush() {
-                                println!("send response flush error, {}", err);
-                                // CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
-                                break;
-                            };
-                            */
                             return true;
                         });
                         {
@@ -453,160 +451,6 @@ impl CTcp {
                             println!("remove consumer");
                             CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
                         }
-                        /*
-                        let mut reader = BufReader::new(&stream);
-                        for line in reader.lines() {
-                            let line = match line {
-                                Ok(line) => line,
-                                Err(_) => {
-                                    println!("disconnect");
-                                    break;
-                                }
-                            };
-                            let mut error: u32 = consts::result::resultOkError;
-                            let mut errorString: String = consts::result::resultOkErrorString.to_string();
-                            loop {
-                                let request = match json::decode(&line) {
-                                    Ok(req) => req,
-                                    Err(_) => break,
-                                };
-                                let request: CRequest = request;
-                                if request.mode == requestModeCreateExchange {
-                                    // create exchange
-                                    let dbConn = match dbConnect.lock() {
-                                        Ok(dbConn) => dbConn,
-                                        Err(_) => break
-                                    };
-                                    if let Err(_) = dbConn.createExchange(&request.exchangeName, &request.exchangeType) {
-                                        break;
-                                    }
-                                } else if request.mode == requestModeCreateQueue {
-                                    // create queue
-                                    let dbConn = match dbConnect.lock() {
-                                        Ok(dbConn) => dbConn,
-                                        Err(_) => break
-                                    };
-                                    if let Err(_) = dbConn.createQueue(&request.queueName, &request.queueType) {
-                                        break;
-                                    }
-                                } else if request.mode == requestModeCreateBind {
-                                    // create bind
-                                    let dbConn = match dbConnect.lock() {
-                                        Ok(dbConn) => dbConn,
-                                        Err(_) => break
-                                    };
-                                    if let Err(_) = dbConn.createBind(&request.exchangeName, &request.queueName, &request.routerKey) {
-                                        break;
-                                    }
-                                } else if request.mode == requestModePublish {
-                                    // create bind
-                                    let dbConn = match dbConnect.lock() {
-                                        Ok(dbConn) => dbConn,
-                                        Err(_) => break
-                                    };
-                                    if let Ok(queues) = dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
-                                        for queue in queues {
-                                            CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &queue);
-                                        }
-                                    } else {
-                                        break;
-                                    }
-                                } else if request.mode == requestModeConsumer {
-                                    // consumer
-                                    {
-                                        let mut consumes = match consumers.lock() {
-                                            Ok(consumes) => consumes,
-                                            Err(_) => break
-                                        };
-                                        let mut acks = match acks.lock() {
-                                            Ok(acks) => acks,
-                                            Err(_) => break,
-                                        };
-                                        let stream = match stream.try_clone() {
-                                            Ok(stream) => stream,
-                                            Err(_) => break
-                                        };
-                                        let (s, r) = mpsc::channel();
-                                        let cons = CConsumerInfo{
-                                            stream: stream,
-                                            connUuid: connUuid.to_string(),
-                                            ackReceiver: r
-                                        };
-                                        match consumes.get_mut(&request.queueName) {
-                                            Some(value) => {
-                                                (*value).push(cons);
-                                            },
-                                            None => {
-                                                let mut v = Vec::new();
-                                                v.push(cons);
-                                                consumes.insert(request.queueName.to_string(), v);
-                                            },
-                                        };
-                                        match acks.get_mut(&connUuid.to_string()) {
-                                            Some(value) => {
-                                                (*value).ackSender = s;
-                                            },
-                                            None => {
-                                                acks.insert(connUuid.to_string(), CAckSender{
-                                                    ackSender: s,
-                                                });
-                                            },
-                                        };
-                                    }
-                                    CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
-                                } else if request.mode == requestModeAck {
-                                    // ack
-                                    let mut acks = match acks.try_lock() {
-                                        Ok(acks) => acks,
-                                        Err(_) => {
-                                            println!("try lock error");
-                                            break;
-                                        }
-                                    };
-                                    if let Some(send) = acks.get(&connUuid.to_string()) {
-                                        if let Err(err) = send.ackSender.send(CAckInfo{
-                                            ackResult: request.ackResult.to_string(),
-                                        }) {
-                                            println!("ackSender send error: {}", err);
-                                        }
-                                    }
-                                }
-                                break
-                            }
-                            let res = CResponse{
-                                mode: responseModeResult.to_string(),
-                                queueName: "".to_string(),
-                                data: "".to_string(),
-                                error: error,
-                                errorString: errorString,
-                            };
-                            if !CTcp::sendResponse(stream.try_clone().unwrap(), res) {
-                                break;
-                            };
-                            /*
-                            let encode = match json::encode(&res) {
-                                Ok(encode) => encode,
-                                Err(_) => continue,
-                            };
-                            let mut writer = BufWriter::new(&stream);
-                            if let Err(err) = writer.write_all(CTcp::joinLineFeed(&encode).as_bytes()) {
-                                println!("send response write all error");
-                                // CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
-                                break;
-                            };
-                            if let Err(err) = writer.flush() {
-                                println!("send response flush error, {}", err);
-                                // CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
-                                break;
-                            };
-                            */
-                        }
-                        {
-                            // disconnect handle
-                            println!("remove consumer");
-                            CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
-                        }
-                        */
                     });
                 }
             });
@@ -711,6 +555,7 @@ impl CTcp {
         let response = CResponse{
             mode: responseModeData.to_string(),
             data: data.to_string(),
+            messageNo: "".to_string(),
             error: consts::result::resultOkError,
             errorString: consts::result::resultOkErrorString.to_string()
         };
@@ -733,45 +578,6 @@ impl CTcp {
         else {
             return ackResultFalse;
         }
-        /*
-        // let consumer = match consumer.lock() {
-        //     Ok(consumer) => consumer,
-        //     Err(_) => return,
-        // };
-        let mut writer = BufWriter::new(&consumer.stream);
-        let encode = match json::encode(&CResponse{
-            mode: responseModeData.to_string(),
-            queueName: queueName.to_string(),
-            data: data.to_string(),
-            error: consts::result::resultOkError,
-            errorString: consts::result::resultOkErrorString.to_string()
-        }) {
-            Ok(encode) => encode,
-            Err(_) => {
-                println!("encode data error, data: {}", data);
-                return ackResultFailed;
-            }
-        };
-        writer.write_all(CTcp::joinLineFeed(&encode).as_bytes());
-        if let Err(e) = writer.flush() {
-            println!("send data error, err: {}", e);
-            // CTcp::removeConsumer(Arc::clone(&consumers), acks.clone(), &consumer.connUuid);
-            return ackResultFailed;
-        };
-        let recv = match consumer.ackReceiver.recv() {
-            Ok(recv) => recv,
-            Err(err) => {
-                println!("{}", err);
-                return ackResultFailed;
-            }
-        };
-        if recv.ackResult == consts::define::ackTrue {
-            return ackResultTrue;
-        }
-        else {
-            return ackResultFalse;
-        }
-        */
     }
 
     fn append32Number(value: u32, buf: &mut Vec<u8>) {
@@ -788,6 +594,8 @@ impl CTcp {
         buf.append(&mut response.mode.as_bytes().to_vec());
         CTcp::append32Number(response.data.len() as u32, &mut buf);
         buf.append(&mut response.data.as_bytes().to_vec());
+        CTcp::append32Number(response.messageNo.len() as u32, &mut buf);
+        buf.append(&mut response.messageNo.as_bytes().to_vec());
         let errorStr = response.error.to_string();
         CTcp::append32Number(errorStr.len() as u32, &mut buf);
         buf.append(&mut errorStr.as_bytes().to_vec());
@@ -895,48 +703,10 @@ impl CTcp {
         };
         set.remove(queueName);
     }
-
-    // fn findConnect(connects: Arc<Mutex<HashMap<String, Arc<Mutex<CConnect>>>>>, vhost: &str) -> Arc<Mutex<CConnect>> {
-    //     let connects = match connects.lock() {
-    //         Ok(connects) => connects,
-    //         Err(_) => {
-    //             return;
-    //         }
-    //     };
-    //     let connect = match connects.get(&vhost) {
-    //         Some(connect) => connect.clone(),
-    //         None => {
-    //             let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
-    //             Arc::new(Mutex::new(CConnect{
-    //                 consumers: Arc::new(Mutex::new(HashMap::new())),
-    //                 acks: Arc::new(Mutex::new(HashMap::new())),
-    //                 queueThreadSet: Arc::new(Mutex::new(HashSet::new())),
-    //                 sender: Arc::new(Mutex::new(sender)),
-    //                 receiver: Arc::new(Mutex::new(receiver))
-    //             }))
-    //         },
-    //     };
-    //     let connect = match connect.lock() {
-    //         Ok(connect) => connect,
-    //         Err(_) => return,
-    //     };
-    //     connect
-    // }
 }
 
 impl CTcp {
     pub fn new(threadMax: usize) -> CTcp {
-        // let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
-        // let tcp = CTcp{
-        //     consumers: HashMap::new(),
-        //     acks: HashMap::new(),
-        //     queueThreadSet: HashSet::new(),
-        //     sender: sender,
-        //     receiver: receiver,
-        //     threadMax: threadMax,
-        //     queuePool: CThreadPool::new(threadMax),
-        // };
-        // conn
         CTcp{
             connects: HashMap::new(),
             threadMax: threadMax

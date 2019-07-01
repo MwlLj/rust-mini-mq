@@ -1,5 +1,6 @@
 extern crate rust_parse;
 extern crate rustc_serialize;
+extern crate uuid;
 
 use std::sync::{
     Arc, Mutex
@@ -9,6 +10,8 @@ use std::io::BufWriter;
 use std::net::TcpStream;
 
 use rustc_serialize::json;
+
+use uuid::Uuid;
 
 use super::super::consts::define;
 
@@ -25,7 +28,8 @@ pub struct CRequest {
     queueType: String,
     routerKey: String,
     data: String,
-    ackResult: String
+    ackResult: String,
+    messageNo: String
 }
 
 pub struct CAck(TcpStream);
@@ -43,7 +47,8 @@ impl CAck {
             queueType: "".to_string(),
             routerKey: "".to_string(),
             data: "".to_string(),
-            ackResult: define::ackTrue.to_string()
+            ackResult: define::ackTrue.to_string(),
+            messageNo: self.genUuid()
         };
         if let Err(err) = self.sendRequest(request) {
             return Err("send eror");
@@ -71,6 +76,10 @@ impl CAck {
 impl CAck {
     fn joinLineFeed(content: &str) -> String {
         return vec![content, "\n"].join("");
+    }
+
+    fn genUuid(&self) -> String {
+        Uuid::new_v4().to_string()
     }
     
     fn append32Number(&self, value: u32, buf: &mut Vec<u8>) {
@@ -103,6 +112,8 @@ impl CAck {
         buf.append(&mut request.data.as_bytes().to_vec());
         self.append32Number(request.ackResult.len() as u32, &mut buf);
         buf.append(&mut request.ackResult.as_bytes().to_vec());
+        self.append32Number(request.messageNo.len() as u32, &mut buf);
+        buf.append(&mut request.messageNo.as_bytes().to_vec());
         if let Err(err) = writer.write_all(&buf) {
             return Err("write error");
         };

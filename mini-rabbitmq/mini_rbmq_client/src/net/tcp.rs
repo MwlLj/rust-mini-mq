@@ -1,5 +1,6 @@
 extern crate rust_parse;
 extern crate rustc_serialize;
+extern crate uuid;
 
 use std::io::prelude::*;
 use std::io::BufReader;
@@ -11,6 +12,8 @@ use std::sync::Arc;
 
 use rustc_serialize::json;
 use rust_parse::cmd::CCmd;
+
+use uuid::Uuid;
 
 use super::super::consts;
 use super::tcp_ack;
@@ -47,13 +50,15 @@ pub struct CRequest {
     queueType: String,
     routerKey: String,
     data: String,
-    ackResult: String
+    ackResult: String,
+    messageNo: String
 }
 
 #[derive(RustcDecodable, RustcEncodable, Default)]
 pub struct CResponse {
     mode: String,
     data: String,
+    messageNo: String,
     error: u32,
     errorString: String
 }
@@ -90,9 +95,10 @@ macro_rules! decode_response {
         }
         if $index == 1 {$req.mode = String::from_utf8($s).unwrap()}
         else if $index == 3 {$req.data = String::from_utf8($s).unwrap()}
-        else if $index == 5 {$req.error = vec_to_number!($s)}
-        else if $index == 7 {$req.errorString = String::from_utf8($s).unwrap()}
-        if $index == 7 {
+        else if $index == 5 {$req.messageNo = String::from_utf8($s).unwrap()}
+        else if $index == 7 {$req.error = vec_to_number!($s)}
+        else if $index == 9 {$req.errorString = String::from_utf8($s).unwrap()}
+        if $index == 9 {
             return (false, 0);
         }
         return (true, 32);
@@ -112,7 +118,8 @@ impl CTcp {
             queueType: "".to_string(),
             routerKey: "".to_string(),
             data: "".to_string(),
-            ackResult: "".to_string()
+            ackResult: "".to_string(),
+            messageNo: self.genUuid()
         };
         if let Err(err) = self.sendRequest(connRequest) {
             return Err("send eror");
@@ -178,7 +185,8 @@ impl CTcp {
             queueType: "".to_string(),
             routerKey: "".to_string(),
             data: "".to_string(),
-            ackResult: "".to_string()
+            ackResult: "".to_string(),
+            messageNo: self.genUuid()
         };
         if let Err(err) = self.sendRequest(connRequest) {
             return Err("send eror");
@@ -212,7 +220,8 @@ impl CTcp {
             queueType: queueType.to_string(),
             routerKey: "".to_string(),
             data: "".to_string(),
-            ackResult: "".to_string()
+            ackResult: "".to_string(),
+            messageNo: self.genUuid()
         };
         if let Err(err) = self.sendRequest(connRequest) {
             return Err("send eror");
@@ -246,7 +255,8 @@ impl CTcp {
             queueType: "".to_string(),
             routerKey: routerKey.to_string(),
             data: "".to_string(),
-            ackResult: "".to_string()
+            ackResult: "".to_string(),
+            messageNo: self.genUuid()
         };
         if let Err(err) = self.sendRequest(connRequest) {
             return Err("send eror");
@@ -280,7 +290,8 @@ impl CTcp {
             queueType: "".to_string(),
             routerKey: routerKey.to_string(),
             data: data.to_string(),
-            ackResult: "".to_string()
+            ackResult: "".to_string(),
+            messageNo: self.genUuid()
         };
         if let Err(err) = self.sendRequest(connRequest) {
             return Err("send eror");
@@ -314,7 +325,8 @@ impl CTcp {
             queueType: "".to_string(),
             routerKey: "".to_string(),
             data: "".to_string(),
-            ackResult: "".to_string()
+            ackResult: "".to_string(),
+            messageNo: self.genUuid()
         };
         if let Err(err) = self.sendRequest(connRequest) {
             return Err("send eror");
@@ -426,6 +438,10 @@ impl CTcp {
         return vec![content, "\n"].join("");
     }
 
+    fn genUuid(&self) -> String {
+        Uuid::new_v4().to_string()
+    }
+
     fn append32Number(&self, value: u32, buf: &mut Vec<u8>) {
         for i in 0..32 {
             let b = (value >> i) & 1;
@@ -456,6 +472,8 @@ impl CTcp {
         buf.append(&mut request.data.as_bytes().to_vec());
         self.append32Number(request.ackResult.len() as u32, &mut buf);
         buf.append(&mut request.ackResult.as_bytes().to_vec());
+        self.append32Number(request.messageNo.len() as u32, &mut buf);
+        buf.append(&mut request.messageNo.as_bytes().to_vec());
         if let Err(err) = writer.write_all(&buf) {
             return Err("write error");
         };
