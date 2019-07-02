@@ -41,6 +41,7 @@ const requestModeCreateBind: &str = "create-bind";
 const requestModeClearQueue: &str = "clear-queue";
 const requestModePublish: &str = "publish";
 const requestModeConsumer: &str = "consumer";
+const requestModeTrigConsumer: &str = "trig-consumer";
 const requestModeAck: &str = "ack";
 
 const responseModeResult: &str = "result";
@@ -102,6 +103,7 @@ pub struct CRequest {
 #[derive(RustcDecodable, RustcEncodable)]
 pub struct CResponse {
     mode: String,
+    queueName: String,
     data: String,
     messageNo: String,
     error: u32,
@@ -261,6 +263,7 @@ impl CTcp {
                             let mut writer = BufWriter::new(&stream);
                             let res = CResponse{
                                 mode: responseModeConnect.to_string(),
+                                queueName: "".to_string(),
                                 data: "".to_string(),
                                 messageNo: "".to_string(),
                                 error: consts::result::resultOkError,
@@ -431,11 +434,14 @@ impl CTcp {
                                             println!("ackSender send error: {}", err);
                                         }
                                     }
+                                } else if request.mode == requestModeTrigConsumer {
+                                    CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
                                 }
                                 break
                             }
                             let res = CResponse{
                                 mode: responseModeResult.to_string(),
+                                queueName: "".to_string(),
                                 data: "".to_string(),
                                 messageNo: request.messageNo.clone(),
                                 error: error,
@@ -554,6 +560,7 @@ impl CTcp {
     fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, consumer: &CConsumerInfo, queueName: &str, data: &str) -> u32 {
         let response = CResponse{
             mode: responseModeData.to_string(),
+            queueName: queueName.to_string(),
             data: data.to_string(),
             messageNo: "".to_string(),
             error: consts::result::resultOkError,
@@ -592,6 +599,8 @@ impl CTcp {
         let mut buf = Vec::new();
         CTcp::append32Number(response.mode.len() as u32, &mut buf);
         buf.append(&mut response.mode.as_bytes().to_vec());
+        CTcp::append32Number(response.queueName.len() as u32, &mut buf);
+        buf.append(&mut response.queueName.as_bytes().to_vec());
         CTcp::append32Number(response.data.len() as u32, &mut buf);
         buf.append(&mut response.data.as_bytes().to_vec());
         CTcp::append32Number(response.messageNo.len() as u32, &mut buf);

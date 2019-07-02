@@ -57,6 +57,7 @@ pub struct CRequest {
 #[derive(RustcDecodable, RustcEncodable, Default)]
 pub struct CResponse {
     mode: String,
+    queueName: String,
     data: String,
     messageNo: String,
     error: u32,
@@ -94,11 +95,12 @@ macro_rules! decode_response {
             return (true, number);
         }
         if $index == 1 {$req.mode = String::from_utf8($s).unwrap()}
-        else if $index == 3 {$req.data = String::from_utf8($s).unwrap()}
-        else if $index == 5 {$req.messageNo = String::from_utf8($s).unwrap()}
-        else if $index == 7 {$req.error = vec_to_number!($s)}
-        else if $index == 9 {$req.errorString = String::from_utf8($s).unwrap()}
-        if $index == 9 {
+        else if $index == 3 {$req.queueName = String::from_utf8($s).unwrap()}
+        else if $index == 5 {$req.data = String::from_utf8($s).unwrap()}
+        else if $index == 7 {$req.messageNo = String::from_utf8($s).unwrap()}
+        else if $index == 9 {$req.error = vec_to_number!($s)}
+        else if $index == 11 {$req.errorString = String::from_utf8($s).unwrap()}
+        if $index == 11 {
             return (false, 0);
         }
         return (true, 32);
