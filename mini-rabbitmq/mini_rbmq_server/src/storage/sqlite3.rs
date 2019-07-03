@@ -137,6 +137,18 @@ impl CSqlite3 {
         Ok(())
     }
 
+    pub fn deleteQueueData(&self, queueName: &str, dataUuid: &str) -> sqlite3::Result<()> {
+        let sql = format!(
+            "
+            delete from {} where uuid = '{}';
+            "
+        , queueName, dataUuid);
+        if let Ok(ref conn) = self.connect {
+            conn.execute(sql)?
+        }
+        Ok(())
+    }
+
     pub fn addData(&self, exchangeName: &str, routerKey: &str, data: &str) -> Result<Vec<String>, &str> {
         let mut infos = self.getBindInfoByExchangeRouterKey(exchangeName, routerKey);
         let length = infos.len();
@@ -189,7 +201,7 @@ impl CSqlite3 {
     }
 
     pub fn getOneData<Func>(&self, queueName: &str, callback: Func) -> Option<String>
-        where Func: Fn(&str, &str) -> bool {
+        where Func: Fn(&str, &str, &str) -> bool {
         let mut uuid = String::new();
         let mut data = String::new();
         let mut queueType = String::new();
@@ -217,8 +229,9 @@ impl CSqlite3 {
         if count == 0 {
             return None;
         }
-        let result = callback(&queueType, &data);
+        let result = callback(&queueType, &uuid, &data);
         if result {
+            /*
             let sql = format!(
                 "
                 delete from {} where uuid = '{}';
@@ -229,6 +242,7 @@ impl CSqlite3 {
                     return None;
                 }
             }
+            */
         } else {
             return None;
         }

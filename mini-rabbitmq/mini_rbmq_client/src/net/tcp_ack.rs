@@ -32,7 +32,7 @@ pub struct CRequest {
     messageNo: String
 }
 
-pub struct CAck(TcpStream);
+pub struct CAck(TcpStream, String, String);
 
 impl CAck {
     pub fn ack(&self) -> Result<(), &str> {
@@ -43,12 +43,12 @@ impl CAck {
             vhost: "".to_string(),
             exchangeName: "".to_string(),
             exchangeType: "".to_string(),
-            queueName: "".to_string(),
+            queueName: self.1.to_string(),
             queueType: "".to_string(),
             routerKey: "".to_string(),
             data: "".to_string(),
             ackResult: define::ackTrue.to_string(),
-            messageNo: self.genUuid()
+            messageNo: self.2.to_string()
         };
         if let Err(err) = self.sendRequest(request) {
             return Err("send eror");
@@ -68,8 +68,8 @@ impl CAck {
         Ok(())
     }
 
-    pub fn new(stream: TcpStream) -> CAck {
-        CAck(stream)
+    pub fn new(stream: TcpStream, queueName: String, dataUuid: String) -> CAck {
+        CAck(stream, queueName, dataUuid)
     }
 }
 

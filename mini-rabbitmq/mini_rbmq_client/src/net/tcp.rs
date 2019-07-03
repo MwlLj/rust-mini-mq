@@ -371,7 +371,7 @@ impl CTcp {
                         return false;
                     }
                 };
-                cb(&tcp_ack::CAck::new(stream), &res.data);
+                cb(&tcp_ack::CAck::new(stream, res.queueName.to_string(), res.messageNo.to_string()), &res.data);
             }
             return true;
         });

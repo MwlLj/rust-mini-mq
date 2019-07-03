@@ -131,7 +131,6 @@ pub struct CTcp {
 
 pub struct CConnect {
     consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>,
-    acks: Arc<Mutex<HashMap<String, CAckSender>>>,
     queueThreadSet: Arc<Mutex<HashSet<String>>>,
     sender: Arc<Mutex<mpsc::Sender<CChannelData>>>,
     receiver: Arc<Mutex<mpsc::Receiver<CChannelData>>>
@@ -220,7 +219,6 @@ impl CTcp {
                                 let (sender, receiver): (mpsc::Sender<CChannelData>, mpsc::Receiver<CChannelData>) = mpsc::channel();
                                 let conn = Arc::new(Mutex::new(CConnect{
                                     consumers: Arc::new(Mutex::new(HashMap::new())),
-                                    acks: Arc::new(Mutex::new(HashMap::new())),
                                     queueThreadSet: Arc::new(Mutex::new(HashSet::new())),
                                     sender: Arc::new(Mutex::new(sender)),
                                     receiver: Arc::new(Mutex::new(receiver))
@@ -243,7 +241,6 @@ impl CTcp {
                         },
                     };
                     let consumers = connect.consumers.clone();
-                    let acks = connect.acks.clone();
                     let queueThreadSet = connect.queueThreadSet.clone();
                     let sender = connect.sender.clone();
                     let receiver = connect.receiver.clone();
@@ -251,7 +248,6 @@ impl CTcp {
                         println!("not found connect, vhost = {}", &vhost);
                         CTcp::dispatch(
                             consumers.clone(),
-                            acks.clone(),
                             queueThreadSet.clone(),
                             threadMax,
                             receiver.clone());
@@ -370,14 +366,6 @@ impl CTcp {
                                                 break;
                                             }
                                         };
-                                        let mut acks = match acks.lock() {
-                                            Ok(acks) => acks,
-                                            Err(_) => {
-                                                error = consts::code::lock_error;
-                                                errorString = consts::code::error_string(error);
-                                                break;
-                                            }
-                                        };
                                         let stream = match stream.try_clone() {
                                             Ok(stream) => stream,
                                             Err(_) => {
@@ -402,19 +390,31 @@ impl CTcp {
                                                 consumes.insert(request.queueName.to_string(), v);
                                             },
                                         };
-                                        match acks.get_mut(&connUuid.to_string()) {
-                                            Some(value) => {
-                                                (*value).ackSender = s;
-                                            },
-                                            None => {
-                                                acks.insert(connUuid.to_string(), CAckSender{
-                                                    ackSender: s,
-                                                });
-                                            },
-                                        };
                                     }
                                     CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
                                 } else if request.mode == requestModeAck {
+                                    {
+                                        let dbConn = match dbConnect.lock() {
+                                            Ok(dbConn) => dbConn,
+                                            Err(_) => {
+                                                error = consts::code::lock_error;
+                                                errorString = consts::code::error_string(error);
+                                                break;
+                                            }
+                                        };
+                                        if request.ackResult == consts::define::ackTrue {
+                                            if let Err(err) = dbConn.deleteQueueData(&request.queueName, &request.messageNo) {
+                                                println!("delete data error, err: {}", err);
+                                                error = consts::code::db_error;
+                                                errorString = consts::code::error_string(error);
+                                                break;
+                                            };
+                                        }
+                                    }
+                                    if request.ackResult == consts::define::ackTrue {
+                                        CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
+                                    }
+                                    /*
                                     // ack
                                     let mut acks = match acks.try_lock() {
                                         Ok(acks) => acks,
@@ -434,6 +434,7 @@ impl CTcp {
                                             println!("ackSender send error: {}", err);
                                         }
                                     }
+                                    */
                                 } else if request.mode == requestModeTrigConsumer {
                                     CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
                                 }
@@ -455,7 +456,7 @@ impl CTcp {
                         {
                             // disconnect handle
                             println!("remove consumer");
-                            CTcp::removeConsumer(consumers.clone(), acks.clone(), &connUuid.to_string());
+                            CTcp::removeConsumer(consumers.clone(), &connUuid.to_string());
                         }
                     });
                 }
@@ -466,18 +467,16 @@ impl CTcp {
 
 // private
 impl CTcp {
-    fn dispatch(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, threadMax: usize, receiver: Arc<Mutex<mpsc::Receiver<CChannelData>>>) {
+    fn dispatch(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, threadMax: usize, receiver: Arc<Mutex<mpsc::Receiver<CChannelData>>>) {
         for i in 0..threadMax {
             let recv = receiver.clone();
             let queueThreadSet = queueThreadSet.clone();
             let consumers = consumers.clone();
-            let acks = acks.clone();
             thread::spawn(move || {
                 loop {
                     let recv = recv.clone();
                     let queueThreadSet = queueThreadSet.clone();
                     let consumers = consumers.clone();
-                    let acks = acks.clone();
                     let recv = match recv.lock() {
                         Ok(recv) => recv,
                         Err(_) => {
@@ -519,7 +518,7 @@ impl CTcp {
                     if length == 0 {
                         continue;
                     }
-                    while let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, data: &str| {
+                    if let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
                         let length = consumersList.len();
                         if length == 0 {
                             return false;
@@ -530,7 +529,7 @@ impl CTcp {
                             if length > 0 {
                                 let index = rand::thread_rng().gen_range(0, length);
                                 let consumer = &consumersList[index];
-                                let r = CTcp::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, &recv.queueName, data);
+                                let r = CTcp::sendToConsumer(consumers.clone(), &consumer, &recv.queueName, dataUuid, data);
                                 if r == ackResultFalse || r == ackResultFailed {
                                     println!("error 1");
                                     return false;
@@ -539,7 +538,7 @@ impl CTcp {
                         } else if queueType == consts::queue::queueTypeFanout {
                             // send to all consumer
                             for consumer in consumersList {
-                                let r = CTcp::sendToConsumer(consumers.clone(), Arc::clone(&acks), &consumer, &recv.queueName, data);
+                                let r = CTcp::sendToConsumer(consumers.clone(), &consumer, &recv.queueName, dataUuid, data);
                                 if r == ackResultFalse || r == ackResultFailed {
                                     println!("error 2");
                                     return false;
@@ -557,12 +556,13 @@ impl CTcp {
         }
     }
 
-    fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, consumer: &CConsumerInfo, queueName: &str, data: &str) -> u32 {
+    fn sendToConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, consumer: &CConsumerInfo, queueName: &str, dataUuid: &str, data: &str) -> u32 {
         let response = CResponse{
             mode: responseModeData.to_string(),
             queueName: queueName.to_string(),
             data: data.to_string(),
-            messageNo: "".to_string(),
+            // use messageNo replace dataUuid
+            messageNo: dataUuid.to_string(),
             error: consts::result::resultOkError,
             errorString: consts::result::resultOkErrorString.to_string()
         };
@@ -572,6 +572,9 @@ impl CTcp {
             // CTcp::removeConsumer(Arc::clone(&consumers), acks.clone(), &consumer.connUuid);
             return ackResultFailed;
         };
+        return ackResultTrue;
+        /*
+        println!("wait recv ack");
         let recv = match consumer.ackReceiver.recv() {
             Ok(recv) => recv,
             Err(err) => {
@@ -579,12 +582,14 @@ impl CTcp {
                 return ackResultFailed;
             }
         };
+        println!("recv ack");
         if recv.ackResult == consts::define::ackTrue {
             return ackResultTrue;
         }
         else {
             return ackResultFalse;
         }
+        */
     }
 
     fn append32Number(value: u32, buf: &mut Vec<u8>) {
@@ -640,10 +645,13 @@ impl CTcp {
         root
     }
 
-    fn removeConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, acks: Arc<Mutex<HashMap<String, CAckSender>>>, connUuid: &str) {
+    fn removeConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, connUuid: &str) {
         let mut consumers = match consumers.lock() {
             Ok(cons) => cons,
-            Err(_) => return
+            Err(_) => {
+                // CTcp::removeAck(acks.clone(), connUuid);
+                return;
+            }
         };
         for (_, value) in consumers.iter_mut() {
             let mut index = -1 as isize;
@@ -660,8 +668,36 @@ impl CTcp {
                 println!("remove index: {}", index);
             }
         }
+        // CTcp::removeAck(acks.clone(), connUuid);
+        /*
         let mut acks = match acks.lock() {
-            Ok(acks) => acks,
+            Ok(acks) => {
+                println!("1");
+                if let Some(send) = acks.get(connUuid) {
+                    println!("2");
+                    send.ackSender.send(CAckInfo{
+                        ackResult: consts::define::ackFalse.to_string(),
+                    });
+                    println!("3");
+                };
+                acks
+            },
+            Err(_) => return
+        };
+        acks.remove(connUuid);
+        */
+    }
+
+    fn removeAck(acks: Arc<Mutex<HashMap<String, CAckSender>>>, connUuid: &str) {
+        let mut acks = match acks.lock() {
+            Ok(acks) => {
+                if let Some(send) = acks.get(connUuid) {
+                    send.ackSender.send(CAckInfo{
+                        ackResult: consts::define::ackFalse.to_string(),
+                    });
+                };
+                acks
+            },
             Err(_) => return
         };
         acks.remove(connUuid);
