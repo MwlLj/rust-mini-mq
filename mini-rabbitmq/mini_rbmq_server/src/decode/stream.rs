@@ -17,19 +17,24 @@ impl CStreamBlockParse {
         where F: FnMut(u64, Vec<u8>, &mut T) -> (bool, u32) {
         let mut len = startLen;
         let mut index = 0;
+        let mut total = 0;
         loop {
             let mut buf = Vec::new();
-            if let Ok(_) = self.reader.by_ref().take(len as u64).read_to_end(&mut buf) {
+            if let Ok(size) = self.reader.by_ref().take(len as u64).read_to_end(&mut buf) {
                 let (b, l) = f(index, buf, t);
                 if !b {
                     break;
                 }
                 len = l;
                 index += 1;
+                total += size;
             } else {
                 println!("read error");
                 return Err("read error");
             }
+        }
+        if total == 0 {
+            return Err("read end");
         }
         Ok(())
     }
