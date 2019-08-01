@@ -409,6 +409,13 @@ impl CTcp {
                                                 errorString = consts::code::error_string(error);
                                                 break;
                                             };
+                                        } else {
+                                            if let None = dbConn.moveFirstToLast(&request.queueName) {
+                                                println!("move data to last error");
+                                                error = consts::code::db_error;
+                                                errorString = consts::code::error_string(error);
+                                                break;
+                                            };
                                         }
                                     }
                                     if request.ackResult == consts::define::ackTrue {
@@ -518,7 +525,7 @@ impl CTcp {
                     if length == 0 {
                         continue;
                     }
-                    if let Some(data) = dbConn.getOneDataPopPush(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
+                    if let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
                         let length = consumersList.len();
                         if length == 0 {
                             return false;

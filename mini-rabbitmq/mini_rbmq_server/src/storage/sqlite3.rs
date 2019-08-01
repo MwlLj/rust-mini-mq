@@ -212,8 +212,7 @@ impl CSqlite3 {
         }
     }
 
-    pub fn getOneDataPopPush<Func>(&self, queueName: &str, callback: Func) -> Option<String>
-        where Func: Fn(&str, &str, &str) -> bool {
+    pub fn moveFirstToLast(&self, queueName: &str) -> Option<String> {
         let mut uuid = String::new();
         let mut data = String::new();
         let mut queueType = String::new();
@@ -241,7 +240,6 @@ impl CSqlite3 {
         if count == 0 {
             return None;
         }
-        let result = callback(&queueType, &uuid, &data);
         self.startTransaction();
         if let Err(err) = self.deleteQueueData(queueName, &uuid) {
             self.rollback();
@@ -252,22 +250,6 @@ impl CSqlite3 {
             return None;
         };
         self.commit();
-        if result {
-            /*
-            let sql = format!(
-                "
-                delete from {} where uuid = '{}';
-                "
-            , queueName, uuid);
-            if let Ok(ref conn) = self.connect {
-                if let Err(_) = conn.execute(sql) {
-                    return None;
-                }
-            }
-            */
-        } else {
-            return None;
-        }
         if count == 0 {
             None
         } else {
