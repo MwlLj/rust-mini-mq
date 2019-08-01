@@ -43,6 +43,7 @@ const requestModePublish: &str = "publish";
 const requestModeConsumer: &str = "consumer";
 const requestModeTrigConsumer: &str = "trig-consumer";
 const requestModeAck: &str = "ack";
+const requestModeDeleteData: &str = "delete-data";
 
 const responseModeResult: &str = "result";
 const responseModeConnect: &str = "connect";
@@ -392,6 +393,21 @@ impl CTcp {
                                         };
                                     }
                                     CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &request.queueName);
+                                } else if request.mode == requestModeDeleteData {
+                                    let dbConn = match dbConnect.lock() {
+                                        Ok(dbConn) => dbConn,
+                                        Err(_) => {
+                                            error = consts::code::lock_error;
+                                            errorString = consts::code::error_string(error);
+                                            break;
+                                        }
+                                    };
+                                    if let Err(err) = dbConn.deleteQueueData(&request.queueName, &request.messageNo) {
+                                        println!("delete data error, err: {}", err);
+                                        error = consts::code::db_error;
+                                        errorString = consts::code::error_string(error);
+                                        break;
+                                    };
                                 } else if request.mode == requestModeAck {
                                     {
                                         let dbConn = match dbConnect.lock() {
