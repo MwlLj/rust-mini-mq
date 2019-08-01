@@ -518,7 +518,7 @@ impl CTcp {
                     if length == 0 {
                         continue;
                     }
-                    if let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
+                    if let Some(data) = dbConn.getOneDataPopPush(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
                         let length = consumersList.len();
                         if length == 0 {
                             return false;

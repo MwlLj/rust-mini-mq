@@ -149,6 +149,18 @@ impl CSqlite3 {
         Ok(())
     }
 
+    pub fn addQueueData(&self, queueName: &str, dataUuid: &str, data: &str) -> sqlite3::Result<()> {
+        let sql = format!(
+            "
+            insert into {} values('{}', '{}');
+            "
+        , queueName, dataUuid, data);
+        if let Ok(ref conn) = self.connect {
+            conn.execute(sql)?
+        }
+        Ok(())
+    }
+
     pub fn addData(&self, exchangeName: &str, routerKey: &str, data: &str) -> Result<Vec<String>, &str> {
         let mut infos = self.getBindInfoByExchangeRouterKey(exchangeName, routerKey);
         let length = infos.len();
@@ -197,6 +209,69 @@ impl CSqlite3 {
         } else {
             self.rollback();
             Err("inner error")
+        }
+    }
+
+    pub fn getOneDataPopPush<Func>(&self, queueName: &str, callback: Func) -> Option<String>
+        where Func: Fn(&str, &str, &str) -> bool {
+        let mut uuid = String::new();
+        let mut data = String::new();
+        let mut queueType = String::new();
+        let mut count: i64 = 0;
+        let sql = format!(
+            "
+            select q.uuid, q.data, tqi.queue_type, count(0) from {} as q, t_queue_info as tqi where tqi.queue_name = '{}' limit 1;
+            "
+            , queueName, queueName);
+        self.get(&sql, &[]
+        , &mut |v: &[sqlite3::Value]| {
+            if let Some(value) = v[0].as_string() {
+                uuid = value.to_string();
+            }
+            if let Some(value) = v[1].as_string() {
+                data = value.to_string();
+            }
+            if let Some(value) = v[2].as_string() {
+                queueType = value.to_string();
+            }
+            if let Some(value) = v[3].as_integer() {
+                count = value;
+            }
+        });
+        if count == 0 {
+            return None;
+        }
+        let result = callback(&queueType, &uuid, &data);
+        self.startTransaction();
+        if let Err(err) = self.deleteQueueData(queueName, &uuid) {
+            self.rollback();
+            return None;
+        };
+        if let Err(err) = self.addQueueData(queueName, &uuid, &data) {
+            self.rollback();
+            return None;
+        };
+        self.commit();
+        if result {
+            /*
+            let sql = format!(
+                "
+                delete from {} where uuid = '{}';
+                "
+            , queueName, uuid);
+            if let Ok(ref conn) = self.connect {
+                if let Err(_) = conn.execute(sql) {
+                    return None;
+                }
+            }
+            */
+        } else {
+            return None;
+        }
+        if count == 0 {
+            None
+        } else {
+            Some(data)
         }
     }
 
