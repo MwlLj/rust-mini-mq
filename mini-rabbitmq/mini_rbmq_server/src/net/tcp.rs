@@ -514,62 +514,65 @@ impl CTcp {
                             continue;
                         }
                     };
-                    let dbConn = match recv.dbConn.lock() {
-                        Ok(dbConn) => dbConn,
-                        Err(_) => {
-                            println!("get dbconn error");
-                            continue;
-                        }
-                    };
-                    let cons = match consumers.lock() {
-                        Ok(cons) => cons,
-                        Err(_) => {
-                            println!("get consumers error");
-                            return false;
-                        }
-                    };
-                    let consumersList = match cons.get(&recv.queueName) {
-                        Some(li) => {
-                            li
-                        },
-                        None => {
-                            println!("consumer is not found");
-                            return false;
-                        }
-                    };
-                    let length = consumersList.len();
-                    if length == 0 {
-                        continue;
-                    }
-                    if let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
+                    loop {
+                        let dbConn = match recv.dbConn.lock() {
+                            Ok(dbConn) => dbConn,
+                            Err(_) => {
+                                println!("get dbconn error");
+                                break;
+                            }
+                        };
+                        let cons = match consumers.lock() {
+                            Ok(cons) => cons,
+                            Err(_) => {
+                                println!("get consumers error");
+                                break;
+                            }
+                        };
+                        let consumersList = match cons.get(&recv.queueName) {
+                            Some(li) => {
+                                li
+                            },
+                            None => {
+                                println!("consumer is not found");
+                                break;
+                            }
+                        };
                         let length = consumersList.len();
                         if length == 0 {
-                            return false;
+                            break;
                         }
-                        if queueType == consts::queue::queueTypeDirect {
-                            // rand consumer
-                            // random
-                            if length > 0 {
-                                let index = rand::thread_rng().gen_range(0, length);
-                                let consumer = &consumersList[index];
-                                let r = CTcp::sendToConsumer(consumers.clone(), &consumer, &recv.queueName, dataUuid, data);
-                                if r == ackResultFalse || r == ackResultFailed {
-                                    println!("error 1");
-                                    return false;
+                        if let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
+                            let length = consumersList.len();
+                            if length == 0 {
+                                return false;
+                            }
+                            if queueType == consts::queue::queueTypeDirect {
+                                // rand consumer
+                                // random
+                                if length > 0 {
+                                    let index = rand::thread_rng().gen_range(0, length);
+                                    let consumer = &consumersList[index];
+                                    let r = CTcp::sendToConsumer(consumers.clone(), &consumer, &recv.queueName, dataUuid, data);
+                                    if r == ackResultFalse || r == ackResultFailed {
+                                        println!("error 1");
+                                        return false;
+                                    }
+                                }
+                            } else if queueType == consts::queue::queueTypeFanout {
+                                // send to all consumer
+                                for consumer in consumersList {
+                                    let r = CTcp::sendToConsumer(consumers.clone(), &consumer, &recv.queueName, dataUuid, data);
+                                    if r == ackResultFalse || r == ackResultFailed {
+                                        println!("error 2");
+                                        return false;
+                                    }
                                 }
                             }
-                        } else if queueType == consts::queue::queueTypeFanout {
-                            // send to all consumer
-                            for consumer in consumersList {
-                                let r = CTcp::sendToConsumer(consumers.clone(), &consumer, &recv.queueName, dataUuid, data);
-                                if r == ackResultFalse || r == ackResultFailed {
-                                    println!("error 2");
-                                    return false;
-                                }
-                            }
+                            return true;
+                        }) {
                         }
-                        return true;
-                    }) {
+                        break;
                     }
                     println!("exit consumer");
                     // queue data is empty -> release thread
@@ -758,10 +761,12 @@ impl CTcp {
                 set.insert(queueName.to_string());
             }
         };
-        sender.send(CChannelData{
+        if let Err(err) = sender.send(CChannelData{
             queueName: queueName.to_string(),
             dbConn: dbConn,
-        });
+        }) {
+            set.remove(queueName);
+        }
     }
 
     fn removeQueueThreadSet(queueThreadSet: Arc<Mutex<HashSet<String>>>, queueName: &str) {
