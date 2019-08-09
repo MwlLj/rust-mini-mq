@@ -125,8 +125,11 @@ struct CAckSender {
     ackSender: mpsc::Sender<CAckInfo>
 }
 
+type DbConns = HashMap<String, Arc<Mutex<sqlite3::CSqlite3>>>;
+
 pub struct CTcp {
     connects: HashMap<String, Arc<Mutex<CConnect>>>,
+    dbConns: DbConns,
     threadMax: usize
 }
 
@@ -147,10 +150,12 @@ impl CTcp {
         CTcp::createDir(&storageRoot);
         let listener = TcpListener::bind(addr).unwrap();
         let connects = Arc::new(Mutex::new(self.connects));
+        let dbConns = Arc::new(Mutex::new(self.dbConns));
         let threadMax = Arc::new(Mutex::new(self.threadMax));
         let storageRoot = Arc::new(Mutex::new(storageRoot));
         for stream in listener.incoming() {
             let connects = connects.clone();
+            let dbConns = dbConns.clone();
             let storageRoot = storageRoot.clone();
             let tm = threadMax.clone();
             thread::spawn(move || {
@@ -196,13 +201,20 @@ impl CTcp {
                         Some(root) => root,
                         None => return,
                     };
-                    let dbConnect = Arc::new(Mutex::new(match sqlite3::CSqlite3::connect(&CTcp::joinStoragePath(&root, &vhost)) {
-                        Ok(conn) => conn,
-                        Err(err) => {
-                            println!("{:?}", err);
-                            return
+                    // let dbConnect = Arc::new(Mutex::new(match sqlite3::CSqlite3::connect(&CTcp::joinStoragePath(&root, &vhost)) {
+                    //     Ok(conn) => conn,
+                    //     Err(err) => {
+                    //         println!("{:?}", err);
+                    //         return
+                    //     }
+                    // }));
+                    let dbConnect = match CTcp::findDbConn(dbConns, &vhost, &root) {
+                        Some(conn) => conn,
+                        None => {
+                            println!("find Db conn error");
+                            return;
                         }
-                    }));
+                    };
                     let mut connect: Option<Arc<Mutex<CConnect>>> = None;
                     let mut isFindConnect = true;
                     {
@@ -339,22 +351,28 @@ impl CTcp {
                                     }
                                 } else if request.mode == requestModePublish {
                                     // create bind
-                                    let dbConn = match dbConnect.lock() {
-                                        Ok(dbConn) => dbConn,
-                                        Err(_) => {
-                                            error = consts::code::lock_error;
-                                            errorString = consts::code::error_string(error);
-                                            break;
-                                        }
-                                    };
-                                    if let Ok(queues) = dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
-                                        for queue in queues {
-                                            CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &queue);
-                                        }
-                                    } else {
-                                        error = consts::code::db_error;
-                                        errorString = consts::code::error_string(error);
-                                        break;
+                                    let mut queues = Vec::new();
+                                    {
+                                        let dbConn = match dbConnect.lock() {
+                                            Ok(dbConn) => dbConn,
+                                            Err(_) => {
+                                                error = consts::code::lock_error;
+                                                errorString = consts::code::error_string(error);
+                                                break;
+                                            }
+                                        };
+                                        queues = match dbConn.addData(&request.exchangeName, &request.routerKey, &request.data) {
+                                            Ok(qs) => qs,
+                                            Err(err) => {
+                                                println!("db error, addData error");
+                                                error = consts::code::db_error;
+                                                errorString = consts::code::error_string(error);
+                                                break;
+                                            }
+                                        };
+                                    }
+                                    for queue in queues {
+                                        CTcp::notifyConsumer(consumers.clone(), queueThreadSet.clone(), sender.clone(), dbConnect.clone(), &queue);
                                     }
                                 } else if request.mode == requestModeConsumer {
                                     // consumer
@@ -540,11 +558,13 @@ impl CTcp {
                         };
                         let length = consumersList.len();
                         if length == 0 {
+                            println!("consumers get {} consumer is empty", &recv.queueName);
                             break;
                         }
-                        if let Some(data) = dbConn.getOneData(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
+                        match dbConn.getOneData(&recv.queueName, |queueType: &str, dataUuid: &str, data: &str| {
                             let length = consumersList.len();
                             if length == 0 {
+                                println!("consumers get {} consumer is empty", &recv.queueName);
                                 return false;
                             }
                             if queueType == consts::queue::queueTypeDirect {
@@ -571,10 +591,14 @@ impl CTcp {
                             }
                             return true;
                         }) {
+                            Some(data) => {},
+                            None => {
+                                println!("get one Data error");
+                            }
                         }
                         break;
                     }
-                    println!("exit consumer");
+                    println!("exit connect");
                     // queue data is empty -> release thread
                     CTcp::removeQueueThreadSet(queueThreadSet.clone(), &recv.queueName);
                 }
@@ -730,6 +754,76 @@ impl CTcp {
     }
 
     fn notifyConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
+        let queueName = queueName.to_string();
+        // thread::spawn(move || {
+            let queueName = &queueName;
+            let dbConn = match dbConn.lock() {
+                Ok(dbConn) => dbConn,
+                Err(_) => {
+                    println!("get dbconn error");
+                    return;
+                }
+            };
+            let cons = match consumers.lock() {
+                Ok(cons) => cons,
+                Err(_) => {
+                    println!("get consumers error");
+                    return;
+                }
+            };
+            let consumersList = match cons.get(queueName) {
+                Some(li) => {
+                    li
+                },
+                None => {
+                    println!("consumer is not found");
+                    return;
+                }
+            };
+            let length = consumersList.len();
+            if length == 0 {
+                println!("consumers get {} consumer is empty", queueName);
+                return;
+            }
+            match dbConn.getOneData(&queueName, |queueType: &str, dataUuid: &str, data: &str| {
+                let length = consumersList.len();
+                if length == 0 {
+                    println!("consumers get {} consumer is empty", queueName);
+                    return false;
+                }
+                if queueType == consts::queue::queueTypeDirect {
+                    // rand consumer
+                    // random
+                    if length > 0 {
+                        let index = rand::thread_rng().gen_range(0, length);
+                        let consumer = &consumersList[index];
+                        let r = CTcp::sendToConsumer(consumers.clone(), &consumer, queueName, dataUuid, data);
+                        if r == ackResultFalse || r == ackResultFailed {
+                            println!("error 1");
+                            return false;
+                        }
+                    }
+                } else if queueType == consts::queue::queueTypeFanout {
+                    // send to all consumer
+                    for consumer in consumersList {
+                        let r = CTcp::sendToConsumer(consumers.clone(), &consumer, queueName, dataUuid, data);
+                        if r == ackResultFalse || r == ackResultFailed {
+                            println!("error 2");
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }) {
+                Some(data) => {},
+                None => {
+                    println!("get one Data is empty, queueName: {}", queueName);
+                }
+            }
+        // });
+    }
+
+    fn notifyConsumer2(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
         let mut consumers = match consumers.lock() {
             Ok(consumers) => consumers,
             Err(_) => return,
@@ -737,6 +831,7 @@ impl CTcp {
         let cons = match consumers.get(queueName) {
             Some(cons) => cons,
             None => {
+                println!("notifyConsumer, consumer not found, queueName: {}", queueName);
                 return;
             },
         };
@@ -761,6 +856,7 @@ impl CTcp {
                 set.insert(queueName.to_string());
             }
         };
+        // println!("notifyConsumer send to channel, queueName: {}", queueName);
         if let Err(err) = sender.send(CChannelData{
             queueName: queueName.to_string(),
             dbConn: dbConn,
@@ -776,12 +872,36 @@ impl CTcp {
         };
         set.remove(queueName);
     }
+
+    fn findDbConn(dbConns: Arc<Mutex<DbConns>>, vhost: &str, root: &str) -> Option<Arc<Mutex<sqlite3::CSqlite3>>> {
+        let mut dbConns = match dbConns.lock() {
+            Ok(conn) => conn,
+            Err(err) => {
+                println!("dbConns lock error, err: {}", err);
+                return None;
+            }
+        };
+        if let Some(conn) = dbConns.get(vhost) {
+            return Some(conn.clone());
+        } else {
+            let conn = Arc::new(Mutex::new(match sqlite3::CSqlite3::connect(&CTcp::joinStoragePath(&root, &vhost)) {
+                Ok(conn) => conn,
+                Err(err) => {
+                    println!("{:?}", err);
+                    return None;
+                }
+            }));
+            dbConns.insert(vhost.to_string(), conn.clone());
+            return Some(conn);
+        }
+    }
 }
 
 impl CTcp {
     pub fn new(threadMax: usize) -> CTcp {
         CTcp{
             connects: HashMap::new(),
+            dbConns: HashMap::new(),
             threadMax: threadMax
         }
     }

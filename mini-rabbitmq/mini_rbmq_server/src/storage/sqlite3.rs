@@ -6,8 +6,11 @@ use super::super::consts::exchange;
 use rand::Rng;
 use uuid::Uuid;
 
+use std::sync::Mutex;
+
 pub struct CSqlite3 {
-    connect: sqlite3::Result<sqlite3::Connection>
+    connect: sqlite3::Result<sqlite3::Connection>,
+    mutex: Mutex<bool>
 }
 
 #[derive(Default, Debug)]
@@ -29,6 +32,7 @@ impl CSqlite3 {
         path.push_str(".db");
         let storage = CSqlite3{
             connect: sqlite3::open(path),
+            mutex: Mutex::new(false)
         };
         match storage.createTable() {
             Err(e) => return Ok(storage),
@@ -144,6 +148,7 @@ impl CSqlite3 {
             "
         , queueName, dataUuid);
         if let Ok(ref conn) = self.connect {
+            self.mutex.lock();
             conn.execute(sql)?
         }
         Ok(())
@@ -268,8 +273,10 @@ impl CSqlite3 {
             select q.uuid, q.data, tqi.queue_type, count(0) from {} as q, t_queue_info as tqi where tqi.queue_name = '{}' limit 1;
             "
             , queueName, queueName);
+        // println!("sql: {}", &sql);
         self.get(&sql, &[]
         , &mut |v: &[sqlite3::Value]| {
+            // println!("---------{:?}---------", v);
             if let Some(value) = v[0].as_string() {
                 uuid = value.to_string();
             }
@@ -284,6 +291,7 @@ impl CSqlite3 {
             }
         });
         if count == 0 {
+            println!("sql count == 0");
             return None;
         }
         let result = callback(&queueType, &uuid, &data);
@@ -422,8 +430,12 @@ impl CSqlite3 {
         where Func: FnMut(&[sqlite3::Value]) {
         let conn = match self.connect {
             Ok(ref conn) => conn,
-            Err(_) => return,
+            Err(ref err) => {
+                println!("connect error, err: {}", &err);
+                return;
+            }
         };
+        self.mutex.lock();
         let pre = match conn.prepare(sql) {
             Ok(pre) => pre,
             Err(err) => {
@@ -443,6 +455,23 @@ impl CSqlite3 {
                 break;
             }
         }
+        /*
+        loop {
+            match cursor.next() {
+                Ok(next) => {
+                    if let Some(row) = next {
+                        callback(row);
+                    } else {
+                        break;
+                    }
+                },
+                Err(err) => {
+                    println!("next error, err: {}", err);
+                    break;
+                }
+            }
+        }
+        */
         // let next = match cursor.next() {
         //     Ok(next) => next,
         //     Err(_) => return,
