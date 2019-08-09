@@ -753,9 +753,9 @@ impl CTcp {
         acks.remove(connUuid);
     }
 
-    fn notifyConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
+    fn notifyConsumer2(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
         let queueName = queueName.to_string();
-        // thread::spawn(move || {
+        thread::spawn(move || {
             let queueName = &queueName;
             let dbConn = match dbConn.lock() {
                 Ok(dbConn) => dbConn,
@@ -820,10 +820,10 @@ impl CTcp {
                     println!("get one Data is empty, queueName: {}", queueName);
                 }
             }
-        // });
+        });
     }
 
-    fn notifyConsumer2(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
+    fn notifyConsumer(consumers: Arc<Mutex<HashMap<String, Vec<CConsumerInfo>>>>, queueThreadSet: Arc<Mutex<HashSet<String>>>, sender: Arc<Mutex<mpsc::Sender<CChannelData>>>, dbConn: Arc<Mutex<sqlite3::CSqlite3>>, queueName: &str) {
         let mut consumers = match consumers.lock() {
             Ok(consumers) => consumers,
             Err(_) => return,

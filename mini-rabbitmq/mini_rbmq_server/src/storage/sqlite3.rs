@@ -9,8 +9,7 @@ use uuid::Uuid;
 use std::sync::Mutex;
 
 pub struct CSqlite3 {
-    connect: sqlite3::Result<sqlite3::Connection>,
-    mutex: Mutex<bool>
+    connect: sqlite3::Result<sqlite3::Connection>
 }
 
 #[derive(Default, Debug)]
@@ -31,8 +30,7 @@ impl CSqlite3 {
         let mut path = String::from(vhost);
         path.push_str(".db");
         let storage = CSqlite3{
-            connect: sqlite3::open(path),
-            mutex: Mutex::new(false)
+            connect: sqlite3::open(path)
         };
         match storage.createTable() {
             Err(e) => return Ok(storage),
@@ -148,7 +146,6 @@ impl CSqlite3 {
             "
         , queueName, dataUuid);
         if let Ok(ref conn) = self.connect {
-            self.mutex.lock();
             conn.execute(sql)?
         }
         Ok(())
@@ -435,7 +432,6 @@ impl CSqlite3 {
                 return;
             }
         };
-        self.mutex.lock();
         let pre = match conn.prepare(sql) {
             Ok(pre) => pre,
             Err(err) => {
