@@ -78,7 +78,8 @@ macro_rules! decode_request {
         else if $index == 17 {$req.data = String::from_utf8($s).unwrap()}
         else if $index == 19 {$req.ackResult = String::from_utf8($s).unwrap()}
         else if $index == 21 {$req.messageNo = String::from_utf8($s).unwrap()}
-        if $index == 21 {
+        else if $index == 23 {$req.dataUuid = String::from_utf8($s).unwrap()}
+        if $index == 23 {
             return (false, 0);
         }
         return (true, 32);
@@ -98,7 +99,8 @@ pub struct CRequest {
     routerKey: String,
     data: String,
     ackResult: String,
-    messageNo: String
+    messageNo: String,
+    dataUuid: String
 }
 
 #[derive(RustcDecodable, RustcEncodable)]
@@ -420,7 +422,7 @@ impl CTcp {
                                             break;
                                         }
                                     };
-                                    if let Err(err) = dbConn.deleteQueueData(&request.queueName, &request.messageNo) {
+                                    if let Err(err) = dbConn.deleteQueueData(&request.queueName, &request.dataUuid) {
                                         println!("delete data error, err: {}", err);
                                         error = consts::code::db_error;
                                         errorString = consts::code::error_string(error);
