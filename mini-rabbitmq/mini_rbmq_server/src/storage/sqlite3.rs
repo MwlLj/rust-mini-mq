@@ -151,6 +151,18 @@ impl CSqlite3 {
         Ok(())
     }
 
+    pub fn updateQueueData(&self, queueName: &str, dataUuid: &str, data: &str) -> sqlite3::Result<()> {
+        let sql = format!(
+            "
+            update {} set data = '{}' where uuid = '{}';
+            "
+        , queueName, data, dataUuid);
+        if let Ok(ref conn) = self.connect {
+            conn.execute(sql)?
+        }
+        Ok(())
+    }
+
     pub fn addQueueData(&self, queueName: &str, dataUuid: &str, data: &str) -> sqlite3::Result<()> {
         let sql = format!(
             "
@@ -211,6 +223,47 @@ impl CSqlite3 {
         } else {
             self.rollback();
             Err("inner error")
+        }
+    }
+
+    pub fn moveFirstToLastWithData(&self, queueName: &str, data: &str) -> Option<String> {
+        let mut uuid = String::new();
+        let mut queueType = String::new();
+        let mut count: i64 = 0;
+        let sql = format!(
+            "
+            select q.uuid, q.data, tqi.queue_type, count(0) from {} as q, t_queue_info as tqi where tqi.queue_name = '{}' limit 1;
+            "
+            , queueName, queueName);
+        self.get(&sql, &[]
+        , &mut |v: &[sqlite3::Value]| {
+            if let Some(value) = v[0].as_string() {
+                uuid = value.to_string();
+            }
+            if let Some(value) = v[2].as_string() {
+                queueType = value.to_string();
+            }
+            if let Some(value) = v[3].as_integer() {
+                count = value;
+            }
+        });
+        if count == 0 {
+            return None;
+        }
+        self.startTransaction();
+        if let Err(err) = self.deleteQueueData(queueName, &uuid) {
+            self.rollback();
+            return None;
+        };
+        if let Err(err) = self.addQueueData(queueName, &uuid, data) {
+            self.rollback();
+            return None;
+        };
+        self.commit();
+        if count == 0 {
+            None
+        } else {
+            Some(data.to_owned())
         }
     }
 
