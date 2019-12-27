@@ -226,15 +226,15 @@ impl CSqlite3 {
         }
     }
 
-    pub fn moveFirstToLastWithData(&self, queueName: &str, data: &str) -> Option<String> {
+    pub fn moveFirstToLastWithData(&self, queueName: &str, dataUuid: &str, data: &str) -> Option<String> {
         let mut uuid = String::new();
         let mut queueType = String::new();
         let mut count: i64 = 0;
         let sql = format!(
             "
-            select q.uuid, q.data, tqi.queue_type, count(0) from {} as q, t_queue_info as tqi where tqi.queue_name = '{}' limit 1;
+            select q.uuid, q.data, tqi.queue_type, count(0) from {} as q, t_queue_info as tqi where tqi.queue_name = '{}' and q.uuid = '{}';
             "
-            , queueName, queueName);
+            , queueName, queueName, dataUuid);
         self.get(&sql, &[]
         , &mut |v: &[sqlite3::Value]| {
             if let Some(value) = v[0].as_string() {
