@@ -446,7 +446,7 @@ impl CTcp {
                                                 break;
                                             };
                                         } else if request.ackResult == consts::define::ackFalseWithData {
-                                            if let None = dbConn.moveFirstToLastWithData(&request.queueName, &request.data) {
+                                            if let None = dbConn.moveFirstToLastWithData(&request.queueName, &request.messageNo, &request.data) {
                                                 println!("move data to last with data error");
                                                 error = consts::code::db_error;
                                                 errorString = consts::code::error_string(error);
